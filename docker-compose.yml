@@ -1,59 +1,76 @@
-## 1
+# ## 1
+# # version: '3.8'
+
+# # services:
+# #   event_listener:
+# #     build: .
+# #     container_name: event_listener
+# #     environment:
+# #       RABBITMQ_URL: amqp://guest:guest@s.kvm4.katmrn.in:5672/
+# #       RABBITMQ_QUEUE: event_queue
+# #     volumes:
+# #       - ./received_events:/app/received_events
+# #     restart: unless-stopped
+
+# ## 2
+
+# # version: '3.8'
+
+# # services:
+# #   event_listener:
+# #     build: .
+# #     container_name: event_listener
+# #     environment:
+# #       RABBITMQ_URL: amqp://guest:guest@s.kvm4.katmrn.in:5672/
+# #       RABBITMQ_QUEUE: event_queue
+# #       SDK_URL: http://198.121.1.8:8080/v1/plate-reader/
+# #       API_KEY: ""
+# #     volumes:
+# #       - ./received_events:/app/received_events
+# #       - ./lnpr_outputs:/app/lnpr_outputs
+# #     restart: unless-stopped
+# #     depends_on:
+# #       - plate_sdk
+
+# #   plate_sdk:
+# #     image: platerecognizer/alpr:latest
+# #     container_name: plate_sdk
+# #     restart: unless-stopped
+# #     environment:
+# #       LICENSE_KEY: hgK4CBb3Ze
+# #       TOKEN: 3a4159d73256f12273d434a9ee9298417d8feb18
+# #     ports:
+# #       - "8080:8080"
+# #     volumes:
+# #       - license:/license
+
+# # volumes:
+# #   license:
+
+# ## 3
+
 # version: '3.8'
 
 # services:
 #   event_listener:
-#     build: .
+#     image: ghcr.io/gokulkato2001/event_listener:latest
+#     pull_policy: always
 #     container_name: event_listener
 #     environment:
 #       RABBITMQ_URL: amqp://guest:guest@s.kvm4.katmrn.in:5672/
 #       RABBITMQ_QUEUE: event_queue
+#       SDK_URL: http://31.97.202.17:8080/v1/plate-reader/
 #     volumes:
-#       - ./received_events:/app/received_events
+#       - received_events:/app/received_events
+#       - lnpr_outputs:/app/lnpr_outputs
 #     restart: unless-stopped
 
-## 2
-
-# version: '3.8'
-
-# services:
-#   event_listener:
-#     build: .
-#     container_name: event_listener
-#     environment:
-#       RABBITMQ_URL: amqp://guest:guest@s.kvm4.katmrn.in:5672/
-#       RABBITMQ_QUEUE: event_queue
-#       SDK_URL: http://198.121.1.8:8080/v1/plate-reader/
-#       API_KEY: ""
-#     volumes:
-#       - ./received_events:/app/received_events
-#       - ./lnpr_outputs:/app/lnpr_outputs
-#     restart: unless-stopped
-#     depends_on:
-#       - plate_sdk
-
-#   plate_sdk:
-#     image: platerecognizer/alpr:latest
-#     container_name: plate_sdk
-#     restart: unless-stopped
-#     environment:
-#       LICENSE_KEY: hgK4CBb3Ze
-#       TOKEN: 3a4159d73256f12273d434a9ee9298417d8feb18
-#     ports:
-#       - "8080:8080"
-#     volumes:
-#       - license:/license
-
-# volumes:
-#   license:
-
-## 3
-
+name: event_listener
 version: '3.8'
 
 services:
   event_listener:
-    image: ghcr.io/hafiii-21/event_listener:latest
+    image: ghcr.io/gokulkato2001/event_listener:latest
     pull_policy: always
     container_name: event_listener
     environment:
@@ -64,3 +81,7 @@ services:
       - received_events:/app/received_events
       - lnpr_outputs:/app/lnpr_outputs
     restart: unless-stopped
+
+volumes:
+  received_events:
+  lnpr_outputs:
