@@ -192,8 +192,10 @@ def publish_lpr_result(payload, headers=None):
 
         print(f"✅ Published LPR payload to queue '{PUBLISH_QUEUE}' (event_id={payload.get('eventId')})")
         connection.close()
+        return True
     except Exception as e:
         print(f"❌ Failed to publish LPR result: {e}")
+        return False
 
 # -----------------------------
 # Callback: when message received
@@ -232,7 +234,8 @@ def callback(ch, method, properties, body):
         print(f"🔍 Running LPR processing on event {event_id}...")
         created_files, detection_results = process_video(video_path)
 
-        # Process each detected plate
+        # Process each detected plate and track publish success
+        all_published_successfully = True
         if detection_results:
             for result in detection_results:
                 # Read image files as binary buffers
@@ -280,29 +283,37 @@ def callback(ch, method, properties, body):
                     } if vehicle_buffer else None
                 }
 
-                publish_lpr_result(result_payload, headers=properties.headers)
+                # Try to publish and track success
+                success = publish_lpr_result(result_payload, headers=properties.headers)
+                if not success:
+                    all_published_successfully = False
         else:
             print(f"⚠️ No plates detected in event {event_id}")
 
-        # Delete the video file after publishing
-        try:
-            if os.path.exists(video_path):
-                os.remove(video_path)
-                print(f"🗑️  Deleted processed video: {video_path}")
-        except Exception as delete_err:
-            print(f"⚠️  Could not delete video {video_path}: {delete_err}")
-        
-        # Delete all created crop files after publishing
-        if created_files:
-            deleted_count = 0
-            for file_path in created_files:
-                try:
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                        deleted_count += 1
-                except Exception as delete_err:
-                    print(f"⚠️  Could not delete {file_path}: {delete_err}")
-            print(f"🗑️  Deleted {deleted_count}/{len(created_files)} cropped image files")
+        # Only delete files if ALL publishes succeeded
+        if all_published_successfully:
+            # Delete the video file after successful publishing
+            try:
+                if os.path.exists(video_path):
+                    os.remove(video_path)
+                    print(f"🗑️  Deleted processed video: {video_path}")
+            except Exception as delete_err:
+                print(f"⚠️  Could not delete video {video_path}: {delete_err}")
+            
+            # Delete all created crop files after successful publishing
+            if created_files:
+                deleted_count = 0
+                for file_path in created_files:
+                    try:
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                            deleted_count += 1
+                    except Exception as delete_err:
+                        print(f"⚠️  Could not delete {file_path}: {delete_err}")
+                print(f"🗑️  Deleted {deleted_count}/{len(created_files)} cropped image files")
+        else:
+            print(f"⚠️  Keeping files - one or more publishes failed (video: {video_path})")
+            print(f"⚠️  Retry processing this event or manually clean up files")
 
         print(f"✅ LPR processing complete for event {event_id}")
         ch.basic_ack(delivery_tag=method.delivery_tag)

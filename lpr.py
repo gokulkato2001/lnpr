@@ -321,12 +321,18 @@ def process_video(video_path: str):
 
     frame_id = 0
     while True:
-        ret, frame = cap.read()
+        # Grab frame without decoding (faster)
+        ret = cap.grab()
         if not ret:
             break
 
         frame_id += 1
         if frame_id % FRAME_SKIP != 0:
+            continue
+        
+        # Only decode frames we actually need to process
+        ret, frame = cap.retrieve()
+        if not ret:
             continue
 
         api_res = recognition_api(frame)
