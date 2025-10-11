@@ -1,3 +1,5 @@
-lpr_outputs/
+lnpr_outputs/
 received_events/
 docker-compose.yml
+.github/
+old/
