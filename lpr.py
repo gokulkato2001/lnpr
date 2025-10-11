@@ -217,7 +217,7 @@ from collections import defaultdict
 SDK_URL = os.getenv("SDK_URL", "http://31.97.202.17:8080/v1/plate-reader/")
 API_KEY = os.getenv("API_KEY", None)
 FRAME_SKIP = int(os.getenv("FRAME_SKIP", 10))
-CONF_THRESHOLD = float(os.getenv("CONF_THRESHOLD", 0.8))
+CONF_THRESHOLD = float(os.getenv("CONF_THRESHOLD", 0.9))
 MAX_CHAR_DIFF = int(os.getenv("MAX_CHAR_DIFF", 2))
 
 OUTPUT_ROOT = "/app/lnpr_outputs"
