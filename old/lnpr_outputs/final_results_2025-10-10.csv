@@ -1,0 +1,10 @@
+timestamp,frame_id,plate,votes,confidence,plate_crop,vehicle_crop
+2025-10-10 13:18:40,10,TN99AB1234,8,0.92,/app/lnpr_outputs/cropped_plates/TN99AB1234_frame10.jpg,/app/lnpr_outputs/cropped_vehicles/TN99AB1234_frame10_vehicle.jpg
+2025-10-10 13:19:26,10,TN99AB1234,5,0.92,/app/lnpr_outputs/cropped_plates/TN99AB1234_frame10.jpg,/app/lnpr_outputs/cropped_vehicles/TN99AB1234_frame10_vehicle.jpg
+2025-10-10 13:20:45,10,TN99AB1234,2,0.92,/app/lnpr_outputs/cropped_plates/TN99AB1234_frame10.jpg,/app/lnpr_outputs/cropped_vehicles/TN99AB1234_frame10_vehicle.jpg
+2025-10-10 13:32:58,10,TN98CC4321,3,0.92,/app/lnpr_outputs/cropped_plates/TN98CC4321_frame10.jpg,/app/lnpr_outputs/cropped_vehicles/TN98CC4321_frame10_vehicle.jpg
+2025-10-10 13:33:30,10,TN98CC4321,4,0.92,/app/lnpr_outputs/cropped_plates/TN98CC4321_frame10.jpg,/app/lnpr_outputs/cropped_vehicles/TN98CC4321_frame10_vehicle.jpg
+2025-10-10 13:34:03,10,TN98CC4321,5,0.92,/app/lnpr_outputs/cropped_plates/TN98CC4321_frame10.jpg,/app/lnpr_outputs/cropped_vehicles/TN98CC4321_frame10_vehicle.jpg
+2025-10-10_13-48-49,10,TN99AB1234,6,0.92,/app/lnpr_outputs/cropped_plates/TN99AB1234_frame10.jpg,/app/lnpr_outputs/cropped_vehicles/TN99AB1234_frame10_vehicle.jpg
+2025-10-10_13-49-56,10,TN99AB1234,2,0.92,/app/lnpr_outputs/cropped_plates/TN99AB1234_frame10.jpg,/app/lnpr_outputs/cropped_vehicles/TN99AB1234_frame10_vehicle.jpg
+2025-10-10_13-51-52,10,TN99AB1234,5,0.92,/app/lnpr_outputs/cropped_plates/TN99AB1234_frame10.jpg,/app/lnpr_outputs/cropped_vehicles/TN99AB1234_frame10_vehicle.jpg

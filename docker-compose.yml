@@ -65,23 +65,44 @@
 #       - lnpr_outputs:/app/lnpr_outputs
 #     restart: unless-stopped
 
-name: event_listener
+
+# # Actual implementation
+# version: '3.8'
+
+# services:
+#   event_listener:
+#     build: .
+#     image: ghcr.io/gokulkato2001/event_listener:latest
+#     container_name: event_listener
+#     environment:
+#       RABBITMQ_URL: amqp://guest:guest@139.84.130.70:5672/
+#       RABBITMQ_QUEUE: lpr_data
+#       SDK_URL: http://31.97.202.17:8080/v1/plate-reader/
+#       API_KEY: <your_api_token_here>
+#     volumes:
+#       - ./received_events:/app/received_events
+#       - ./lnpr_outputs:/app/lnpr_outputs
+#     restart: unless-stopped
+
+
 version: '3.8'
 
 services:
   event_listener:
-    image: ghcr.io/gokulkato2001/event_listener:latest
+    # image: ghcr.io/gokulkato2001/event_listener:latest
+    build: .
     pull_policy: always
     container_name: event_listener
     environment:
-      RABBITMQ_URL: amqp://guest:guest@s.kvm4.katmrn.in:5672/
-      RABBITMQ_QUEUE: event_queue
+      RABBITMQ_URL: amqp://guest:guest@139.84.130.70:5672/
+      RABBITMQ_QUEUE: lpr_data
+      LPR_PUBLISH_QUEUE: lpr_detection_queue
       SDK_URL: http://31.97.202.17:8080/v1/plate-reader/
+      API_KEY: 4478d74ca90ad82a3a73bd309d8a0f4888bad9b8
+      FRAME_SKIP: 10
+      CONF_THRESHOLD: 0.8
+      MAX_CHAR_DIFF: 2
     volumes:
-      - received_events:/app/received_events
-      - lnpr_outputs:/app/lnpr_outputs
+      - ./received_events:/app/received_events
+      - ./lnpr_outputs:/app/lnpr_outputs
     restart: unless-stopped
-
-volumes:
-  received_events:
-  lnpr_outputs:

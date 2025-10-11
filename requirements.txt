@@ -1,5 +1,6 @@
-opencv-python
-requests 
-pillow 
-tqdm
+opencv-python-headless
+requests
 pandas
+pillow
+tqdm
+pika
