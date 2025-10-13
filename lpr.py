@@ -214,10 +214,16 @@ from collections import defaultdict
 # -----------------------------
 # CONFIGURATION
 # -----------------------------
+# SDK_URL = os.getenv("SDK_URL", "http://31.97.202.17:8080/v1/plate-reader/")
+# API_KEY = os.getenv("API_KEY", None)
+# FRAME_SKIP = int(os.getenv("FRAME_SKIP", 10))
+# CONF_THRESHOLD = float(os.getenv("CONF_THRESHOLD", 0.9))
 SDK_URL = os.getenv("SDK_URL", "http://31.97.202.17:8080/v1/plate-reader/")
 API_KEY = os.getenv("API_KEY", None)
 FRAME_SKIP = int(os.getenv("FRAME_SKIP", 10))
-CONF_THRESHOLD = float(os.getenv("CONF_THRESHOLD", 0.9))
+THRESHOLD_O = float(os.getenv("THRESHOLD_O", 0.9))   # OCR/Recognition threshold
+THRESHOLD_D = float(os.getenv("THRESHOLD_D", 0.85))  # Detection threshold
+
 MAX_CHAR_DIFF = int(os.getenv("MAX_CHAR_DIFF", 2))
 
 OUTPUT_ROOT = "/app/lnpr_outputs"
@@ -336,17 +342,60 @@ def process_video(video_path: str):
             continue
 
         api_res = recognition_api(frame)
+        
+        # ✅ Safety check: ensure SDK returned a valid dictionary
+        if not isinstance(api_res, dict):
+            print(f"[ERROR] Unexpected SDK response format: {type(api_res)} → skipping frame")
+            continue
+
         if "results" not in api_res:
             continue
 
-        for idx, res in enumerate(api_res["results"], start=1):
-            plate = res.get("plate", "").upper()
-            score = float(res.get("score", 0.0))
-            plate_box = res.get("box", {})
-            vehicle_box = res.get("vehicle", {}).get("box") if res.get("vehicle") else None
+        # for idx, res in enumerate(api_res["results"], start=1):
+        #     plate = res.get("plate", "").upper()
+        #     score = float(res.get("score", 0.0))
+        #     plate_box = res.get("box", {})
+        #     vehicle_box = res.get("vehicle", {}).get("box") if res.get("vehicle") else None
 
-            # Case 1: Plate detected but OCR failed
-            if not plate or score < CONF_THRESHOLD:
+        #     # Case 1: Plate detected but OCR failed
+        #     # if not plate or score < CONF_THRESHOLD:
+        #     if not plate or confidence < CONF_THRESHOLD:
+        #         if plate_box:
+        #             crop_target = safe_crop(frame, plate_box)
+        #             if crop_target is not None:
+        #                 fn = f"{timestamp}_frame{frame_id}_no_ocr_{idx}.jpg"
+        #                 no_ocr_path = os.path.join(NO_OCR_DIR, fn)
+        #                 cv2.imwrite(no_ocr_path, crop_target)
+        #                 created_files.append(no_ocr_path)
+        #                 print(f"[Frame {frame_id}] No OCR → Saved {fn}")
+        #         continue
+
+        #     # Case 2: Valid OCR → vote aggregation
+        #     matched_key = next((p for p in votes if is_close_match(p, plate, MAX_CHAR_DIFF)), None)
+        #     canonical_plate = matched_key if matched_key else plate
+        #     entry = votes[canonical_plate]
+        #     entry["count"] += 1
+
+        #     if score > entry["best_conf"]:
+        #         entry.update({
+        #             "best_conf": score,
+        #             "best_frame": frame.copy(),
+        #             "best_box": plate_box,
+        #             "vehicle_box": vehicle_box,
+        #             "frame_id": frame_id
+        #         })
+
+        for idx, res in enumerate(api_res.get("results", []), start=1):
+            plate = res.get("plate", "").upper()
+            confidence = float(res.get("confidence", 0.0))  # OCR confidence (0–100)
+            dscore = float(res.get("dscore", 0.0))          # Detection confidence (0–1)
+            plate_box = res.get("box", {})
+            vehicle_info = res.get("vehicle", {}) or {}
+            vehicle_box = vehicle_info.get("box")
+            vehicle_type = vehicle_info.get("type", "unknown")
+
+            # Apply normalized thresholds
+            if not plate or (confidence / 100) < THRESHOLD_O or dscore < THRESHOLD_D:
                 if plate_box:
                     crop_target = safe_crop(frame, plate_box)
                     if crop_target is not None:
@@ -354,24 +403,27 @@ def process_video(video_path: str):
                         no_ocr_path = os.path.join(NO_OCR_DIR, fn)
                         cv2.imwrite(no_ocr_path, crop_target)
                         created_files.append(no_ocr_path)
-                        print(f"[Frame {frame_id}] No OCR → Saved {fn}")
+                        print(f"[Frame {frame_id}] No OCR or below threshold → Saved {fn}")
                 continue
 
-            # Case 2: Valid OCR → vote aggregation
+            # Vote aggregation
             matched_key = next((p for p in votes if is_close_match(p, plate, MAX_CHAR_DIFF)), None)
             canonical_plate = matched_key if matched_key else plate
             entry = votes[canonical_plate]
             entry["count"] += 1
 
-            if score > entry["best_conf"]:
+            if confidence > entry["best_conf"]:
                 entry.update({
-                    "best_conf": score,
+                    "best_conf": confidence,
+                    "best_dscore": dscore,
                     "best_frame": frame.copy(),
                     "best_box": plate_box,
                     "vehicle_box": vehicle_box,
+                    "vehicle_type": vehicle_type,
                     "frame_id": frame_id
                 })
 
+        
         print(f"[Frame {frame_id}] Processed ({len(votes)} active plates)")
 
     cap.release()
@@ -404,22 +456,38 @@ def process_video(video_path: str):
             # Store the crop data for payload
             vehicle_crop_data = vehicle_crop
 
+        # results.append({
+        #     "timestamp": timestamp,
+        #     "frame_id": info["frame_id"],
+        #     "plate": plate,
+        #     "votes": info["count"],
+        #     "confidence": info["best_conf"],
+        #     "plate_crop": plate_file,
+        #     "vehicle_crop": vehicle_file,
+        #     "plate_crop_data": plate_crop_data,
+        #     "vehicle_crop_data": vehicle_crop_data
+        # })
+
         results.append({
-            "timestamp": timestamp,
-            "frame_id": info["frame_id"],
-            "plate": plate,
-            "votes": info["count"],
-            "confidence": info["best_conf"],
-            "plate_crop": plate_file,
-            "vehicle_crop": vehicle_file,
-            "plate_crop_data": plate_crop_data,
-            "vehicle_crop_data": vehicle_crop_data
-        })
+        "timestamp": timestamp,
+        "frame_id": info["frame_id"],
+        "plate": plate,
+        "votes": info["count"],
+        "confidence": round(info.get("best_conf", 0.0), 1),  # OCR confidence (%)
+        "dscore": round(info.get("best_dscore", 0.0), 2),    # Detection confidence (0–1)
+        "vehicle_type": info.get("vehicle_type", "unknown"),
+        "plate_crop": plate_file,
+        "vehicle_crop": vehicle_file,
+        "plate_crop_data": plate_crop_data,
+        "vehicle_crop_data": vehicle_crop_data
+    })
+
 
     # Write CSV (only write fields that belong in CSV, not the crop data)
     file_exists = os.path.isfile(csv_file)
     with open(csv_file, "a", newline="") as csvfile:
-        fieldnames = ["timestamp", "frame_id", "plate", "votes", "confidence", "plate_crop", "vehicle_crop"]
+        # fieldnames = ["timestamp", "frame_id", "plate", "votes", "confidence", "plate_crop", "vehicle_crop"]
+        fieldnames = ["timestamp", "frame_id", "plate", "votes", "confidence", "dscore", "vehicle_type", "plate_crop", "vehicle_crop"]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore')
         if not file_exists:
             writer.writeheader()

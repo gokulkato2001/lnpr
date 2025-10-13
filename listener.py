@@ -144,6 +144,7 @@
 #     log("🚀 Starting Event Listener (LPR Service)...")
 #     main()
 
+# Actual implementation
 
 import pika
 import json
@@ -259,6 +260,7 @@ def callback(ch, method, properties, body):
                     "deviceId": device_id,
                     "siteId": site_id,
                     "colour": colors,
+                    "vehicleType": result.get("vehicle_type"),
                     "numberPlateImage": {
                         "buffer": {
                             "type": "Buffer",
