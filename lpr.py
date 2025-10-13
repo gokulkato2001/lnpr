@@ -226,7 +226,7 @@ FRAME_SKIP = int(os.getenv("FRAME_SKIP", 10))
 
 MAX_CHAR_DIFF = int(os.getenv("MAX_CHAR_DIFF", 2))
 
-OUTPUT_ROOT = os.getenv("OUTPUT_ROOT", "lnpr_outputs")  # Use relative path for local, /app/lnpr_outputs for Docker
+OUTPUT_ROOT = "/app/lnpr_outputs"
 CROP_PLATE_DIR = os.path.join(OUTPUT_ROOT, "cropped_plates")
 CROP_VEHICLE_DIR = os.path.join(OUTPUT_ROOT, "cropped_vehicles")
 NO_OCR_DIR = os.path.join(OUTPUT_ROOT, "cropped_no_ocr")
@@ -500,15 +500,15 @@ def process_video(video_path: str):
     return created_files, results
 
 
-# -----------------------------
-# OPTIONAL: manual run for testing
-# -----------------------------
-if __name__ == "__main__":
-    video_path = "/home/katomaran/Desktop/lpr/lnpr_test_1_R178441.mp4"
-    if video_path:
-        process_video(video_path)
-    else:
-        print("⚠️  No VIDEO_PATH provided. This module is meant to be called by listener.py")
+# # -----------------------------
+# # OPTIONAL: manual run for testing
+# # -----------------------------
+# if __name__ == "__main__":
+#     video_path = os.getenv("VIDEO_PATH")
+#     if video_path:
+#         process_video(video_path)
+#     else:
+#         print("⚠️  No VIDEO_PATH provided. This module is meant to be called by listener.py")
 
 
 # # Mock Plate Recognizer API for testing LPR pipeline.
