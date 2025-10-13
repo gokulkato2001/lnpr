@@ -40,34 +40,34 @@
 # CMD ["python", "main.py"]
 
 
-# #  Actual implementation
-# FROM python:3.10-slim
-
-# WORKDIR /app
-# COPY requirements.txt .
-# RUN apt-get update && apt-get install -y libgl1 && \
-#     pip install --no-cache-dir -r requirements.txt
-
-# COPY . /app
-# CMD ["python", "-u", "listener.py"]
-
-# #  Actual implementation 2
+#  Actual implementation
 FROM python:3.10-slim
 
 WORKDIR /app
-
-# Copy and install dependencies
 COPY requirements.txt .
 RUN apt-get update && apt-get install -y libgl1 && \
-    pip install --no-cache-dir -r requirements.txt && \
-    rm -rf /var/lib/apt/lists/*
+    pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
 COPY . /app
-
-# Ensure volume directories exist with open permissions
-RUN mkdir -p /app/received_events /app/lnpr_outputs && chmod -R 777 /app
-
-# Run the listener
 CMD ["python", "-u", "listener.py"]
+
+# #  Actual implementation 2
+# FROM python:3.10-slim
+
+# WORKDIR /app
+
+# # Copy and install dependencies
+# COPY requirements.txt .
+# RUN apt-get update && apt-get install -y libgl1 && \
+#     pip install --no-cache-dir -r requirements.txt && \
+#     rm -rf /var/lib/apt/lists/*
+
+# # Copy application code
+# COPY . /app
+
+# # Ensure volume directories exist with open permissions
+# RUN mkdir -p /app/received_events /app/lnpr_outputs && chmod -R 777 /app
+
+# # Run the listener
+# CMD ["python", "-u", "listener.py"]
 

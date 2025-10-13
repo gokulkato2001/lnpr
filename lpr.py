@@ -351,11 +351,19 @@ def process_video(video_path: str):
         if "results" not in api_res:
             continue
 
+        # for idx, res in enumerate(api_res["results"], start=1):
+        #     plate = res.get("plate", "").upper()
+        #     score = float(res.get("score", 0.0))
+        #     plate_box = res.get("box", {})
+        #     vehicle_box = res.get("vehicle", {}).get("box") if res.get("vehicle") else None
+
         for idx, res in enumerate(api_res["results"], start=1):
             plate = res.get("plate", "").upper()
             score = float(res.get("score", 0.0))
             plate_box = res.get("box", {})
-            vehicle_box = res.get("vehicle", {}).get("box") if res.get("vehicle") else None
+            vehicle_info = res.get("vehicle", {}) or {}
+            vehicle_box = vehicle_info.get("box")
+            vehicle_type = vehicle_info.get("type", "unknown")
 
             # Case 1: Plate detected but OCR failed
             if not plate or score < CONF_THRESHOLD:
@@ -382,6 +390,7 @@ def process_video(video_path: str):
                     "best_frame": frame.copy(),
                     "best_box": plate_box,
                     "vehicle_box": vehicle_box,
+                    "vehicle_type": vehicle_type,
                     "frame_id": frame_id
                 })
 
@@ -488,7 +497,8 @@ def process_video(video_path: str):
     file_exists = os.path.isfile(csv_file)
     with open(csv_file, "a", newline="") as csvfile:
         # fieldnames = ["timestamp", "frame_id", "plate", "votes", "confidence", "plate_crop", "vehicle_crop"]
-        fieldnames = ["timestamp", "frame_id", "plate", "votes", "confidence", "dscore", "vehicle_type", "plate_crop", "vehicle_crop"]
+        # fieldnames = ["timestamp", "frame_id", "plate", "votes", "confidence", "dscore", "vehicle_type", "plate_crop", "vehicle_crop"]
+        fieldnames = ["timestamp", "frame_id", "plate", "votes", "confidence", "vehicle_type", "plate_crop", "vehicle_crop"]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore')
         if not file_exists:
             writer.writeheader()
@@ -498,7 +508,6 @@ def process_video(video_path: str):
     print(f"✅ Done. Crops + CSV saved in {OUTPUT_ROOT}")
     
     return created_files, results
-
 
 # # -----------------------------
 # # OPTIONAL: manual run for testing
