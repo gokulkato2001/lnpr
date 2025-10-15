@@ -145,23 +145,29 @@
 #     main()
 
 # Actual implementation
-
+import time
 import pika
 import json
 import os
-import base64
-import tempfile
+import logging
 import cv2
 from datetime import datetime
-from lpr import process_video # your LPR function that processes the video
+from lpr import process_video  # your LPR function that processes the video
+
+# -----------------------------
+# Logging setup
+# -----------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 # -----------------------------
 # Configuration
 # -----------------------------
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@139.84.130.70:5672")
-# LISTEN_QUEUE = os.getenv("LPR_QUEUE", "lpr_queue")  # queue to listen from
-LISTEN_QUEUE = os.getenv("RABBITMQ_QUEUE", "lpr_data")  # queue to listen from
-PUBLISH_QUEUE = os.getenv("LPR_PUBLISH_QUEUE", "lpr_detection_queue")  # queue to send results
+LISTEN_QUEUE = os.getenv("RABBITMQ_QUEUE", "lpr_data")
+PUBLISH_QUEUE = os.getenv("LPR_PUBLISH_QUEUE", "lpr_detection_queue")
 RECEIVED_DIR = "/app/received_events"
 OUTPUT_DIR = "/app/lnpr_outputs"
 
@@ -169,17 +175,41 @@ os.makedirs(RECEIVED_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # -----------------------------
+# Global connection and channel
+# -----------------------------
+connection = None
+publish_channel = None
+
+def get_rabbitmq_channel():
+    """Ensure a live RabbitMQ connection and channel."""
+    global connection, publish_channel
+    try:
+        if connection is None or connection.is_closed:
+            logging.info("🔗 Connecting to RabbitMQ broker...")
+            params = pika.URLParameters(RABBITMQ_URL)
+            params.heartbeat = 1200
+            params.blocked_connection_timeout = 600
+            connection = pika.BlockingConnection(params)
+            publish_channel = connection.channel()
+            publish_channel.queue_declare(queue=PUBLISH_QUEUE, durable=True)
+            logging.info("✅ RabbitMQ channel ready.")
+    except Exception as e:
+        logging.error(f"❌ RabbitMQ connection failed: {e}")
+        connection = None
+        publish_channel = None
+    return publish_channel
+
+# -----------------------------
 # Helper: Publish results
 # -----------------------------
 def publish_lpr_result(payload, headers=None):
-    """Publish processed LPR result to RabbitMQ."""
-    try:
-        params = pika.URLParameters(RABBITMQ_URL)
-        connection = pika.BlockingConnection(params)
-        channel = connection.channel()
-        channel.queue_declare(queue=PUBLISH_QUEUE, durable=True)
+    """Publish processed LPR result to RabbitMQ using a persistent connection."""
+    channel = get_rabbitmq_channel()
+    if channel is None:
+        logging.error("❌ No valid RabbitMQ channel available.")
+        return False
 
-        # Use headers from incoming message if available
+    try:
         msg_headers = headers or {}
         channel.basic_publish(
             exchange='',
@@ -190,29 +220,25 @@ def publish_lpr_result(payload, headers=None):
                 headers=msg_headers
             )
         )
-
-        print(f"✅ Published LPR payload to queue '{PUBLISH_QUEUE}' (event_id={payload.get('eventId')})")
-        connection.close()
+        logging.info(f"✅ Published LPR payload to queue '{PUBLISH_QUEUE}' (event_id={payload.get('eventId')})")
         return True
     except Exception as e:
-        print(f"❌ Failed to publish LPR result: {e}")
+        logging.error(f"❌ Failed to publish LPR result: {e}")
         return False
 
 # -----------------------------
 # Callback: when message received
 # -----------------------------
 def callback(ch, method, properties, body):
-    print("🎬 Received new LPR clip message...")
+    logging.info("🎬 Received new LPR clip message...")
     try:
         message = json.loads(body)
-        # event_id = message.get("eventId", "unknown")
         event_id = message.get("eventId") or message.get("event_id") or "unknown"
         device_id = message.get("deviceId") or message.get("device_id") or "unknown"
         site_id = message.get("siteId") or message.get("site_id") or "unknown"
         application_type = message.get("applicationType") or message.get("application_type") or "lnpr"
         colors = message.get("colors") or message.get("colour") or None
 
-        # Extract binary video data if sent
         clip_data = None
         clip_info = message.get("event_clip") or message.get("video") or message.get("vehicleImage")
         if isinstance(clip_info, dict) and "buffer" in clip_info:
@@ -220,41 +246,42 @@ def callback(ch, method, properties, body):
             clip_data = bytes(data)
 
         if not clip_data:
-            print(f"⚠️ No clip data found for event {event_id}")
+            logging.warning(f"⚠️ No clip data found for event {event_id}")
             ch.basic_ack(delivery_tag=method.delivery_tag)
             return
 
-        # Save to temp MP4
+        # Save incoming video temporarily
         video_path = os.path.join(RECEIVED_DIR, f"{event_id}.mp4")
         with open(video_path, "wb") as f:
             f.write(clip_data)
+        logging.info(f"🎥 Saved incoming clip → {video_path}")
 
-        print(f"🎥 Saved incoming clip → {video_path}")
-
-        # Run your LPR process (replace main() with your actual logic)
-        print(f"🔍 Running LPR processing on event {event_id}...")
+        # Run LPR process
+        logging.info(f"🔍 Running LPR processing on event {event_id}...")
         created_files, detection_results = process_video(video_path)
 
-        # Process each detected plate and track publish success
         all_published_successfully = True
         if detection_results:
             for result in detection_results:
-                # Read image files as binary buffers
+                plate_text = result.get("plate", "").strip()
+                if not plate_text:
+                    logging.warning(f"⚠️ Skipping frame (no OCR detected) for event {event_id}")
+                    continue
+
                 plate_buffer = None
                 vehicle_buffer = None
-                
+
                 if result.get("plate_crop") and os.path.exists(result["plate_crop"]):
                     with open(result["plate_crop"], "rb") as f:
                         plate_buffer = list(f.read())
-                
+
                 if result.get("vehicle_crop") and os.path.exists(result["vehicle_crop"]):
                     with open(result["vehicle_crop"], "rb") as f:
                         vehicle_buffer = list(f.read())
-                
-                # Construct payload in expected format (matching Node.js Buffer JSON format)
+
                 result_payload = {
                     "eventId": event_id,
-                    "ocrText": result["plate"],
+                    "ocrText": plate_text,
                     "detectedTime": datetime.now().isoformat(),
                     "applicationType": application_type,
                     "deviceId": device_id,
@@ -262,10 +289,7 @@ def callback(ch, method, properties, body):
                     "colour": colors,
                     "vehicleType": result.get("vehicle_type"),
                     "numberPlateImage": {
-                        "buffer": {
-                            "type": "Buffer",
-                            "data": plate_buffer
-                        },
+                        "buffer": {"type": "Buffer", "data": plate_buffer},
                         "originalname": os.path.basename(result.get("plate_crop", "")),
                         "fieldname": "file",
                         "encoding": "7bit",
@@ -273,10 +297,7 @@ def callback(ch, method, properties, body):
                         "size": len(plate_buffer) if plate_buffer else 0
                     } if plate_buffer else None,
                     "vehicleImage": {
-                        "buffer": {
-                            "type": "Buffer",
-                            "data": vehicle_buffer
-                        },
+                        "buffer": {"type": "Buffer", "data": vehicle_buffer},
                         "originalname": os.path.basename(result.get("vehicle_crop", "")),
                         "fieldname": "file",
                         "encoding": "7bit",
@@ -285,91 +306,73 @@ def callback(ch, method, properties, body):
                     } if vehicle_buffer else None
                 }
 
-                # Try to publish and track success
-                success = publish_lpr_result(result_payload, headers=properties.headers)
+                for attempt in range(3):
+                    success = publish_lpr_result(result_payload, headers=properties.headers)
+                    if success:
+                        break
+                    logging.warning(f"⚠️ Publish attempt {attempt+1} failed for event {event_id}, retrying...")
+                    time.sleep(2)
+
                 if not success:
                     all_published_successfully = False
         else:
-            print(f"⚠️ No plates detected in event {event_id}")
+            logging.warning(f"⚠️ No valid plates detected in event {event_id}")
 
-        # Only delete files if ALL publishes succeeded
+        # Cleanup
         if all_published_successfully:
-            # Delete the video file after successful publishing
             try:
                 if os.path.exists(video_path):
                     os.remove(video_path)
-                    print(f"🗑️  Deleted processed video: {video_path}")
-            except Exception as delete_err:
-                print(f"⚠️  Could not delete video {video_path}: {delete_err}")
-            
-            # Delete all created crop files after successful publishing
+                    logging.info(f"🗑️ Deleted processed video: {video_path}")
+            except Exception as e:
+                logging.warning(f"⚠️ Could not delete video {video_path}: {e}")
+
             if created_files:
-                deleted_count = 0
                 for file_path in created_files:
                     try:
                         if os.path.exists(file_path):
                             os.remove(file_path)
-                            deleted_count += 1
-                    except Exception as delete_err:
-                        print(f"⚠️  Could not delete {file_path}: {delete_err}")
-                print(f"🗑️  Deleted {deleted_count}/{len(created_files)} cropped image files")
+                    except Exception as e:
+                        logging.warning(f"⚠️ Could not delete {file_path}: {e}")
         else:
-            print(f"⚠️  Keeping files - one or more publishes failed (video: {video_path})")
-            print(f"⚠️  Retry processing this event or manually clean up files")
+            logging.warning(f"⚠️ Keeping files - one or more publishes failed (video: {video_path})")
 
-        print(f"✅ LPR processing complete for event {event_id}")
+        logging.info(f"✅ LPR processing complete for event {event_id}")
         ch.basic_ack(delivery_tag=method.delivery_tag)
 
     except Exception as e:
-        print(f"❌ Error handling message: {e}")
-        
-        # Clean up video file even on error
-        try:
-            if 'video_path' in locals() and os.path.exists(video_path):
-                os.remove(video_path)
-                print(f"🗑️  Deleted failed video: {video_path}")
-        except Exception as cleanup_err:
-            print(f"⚠️  Could not delete failed video: {cleanup_err}")
-        
-        # Clean up any created crop files even on error
-        try:
-            if 'created_files' in locals() and created_files:
-                deleted_count = 0
-                for file_path in created_files:
-                    try:
-                        if os.path.exists(file_path):
-                            os.remove(file_path)
-                            deleted_count += 1
-                    except Exception as del_err:
-                        pass  # Silent fail on cleanup
-                if deleted_count > 0:
-                    print(f"🗑️  Cleaned up {deleted_count} orphaned crop files")
-        except Exception as cleanup_err:
-            print(f"⚠️  Could not clean up crop files: {cleanup_err}")
-        
+        logging.error(f"❌ Error handling message: {e}")
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
 # -----------------------------
 # Main listener
 # -----------------------------
 def start_listener():
-    print(f"🔗 Connecting to RabbitMQ broker: {RABBITMQ_URL}")
-    try:
-        params = pika.URLParameters(RABBITMQ_URL)
-        connection = pika.BlockingConnection(params)
-        channel = connection.channel()
-        channel.queue_declare(queue=LISTEN_QUEUE, durable=True)
+    while True:
+        try:
+            logging.info(f"🔗 Connecting to RabbitMQ broker: {RABBITMQ_URL}")
+            params = pika.URLParameters(RABBITMQ_URL)
+            params.heartbeat = 1200
+            params.blocked_connection_timeout = 600
+            connection = pika.BlockingConnection(params)
+            channel = connection.channel()
+            channel.queue_declare(queue=LISTEN_QUEUE, durable=True)
+            logging.info(f"🎧 Listening for messages on queue '{LISTEN_QUEUE}'...")
+            channel.basic_consume(queue=LISTEN_QUEUE, on_message_callback=callback, auto_ack=False)
+            channel.start_consuming()
 
-        print(f"🎧 Listening for messages on queue '{LISTEN_QUEUE}'...")
-        channel.basic_consume(queue=LISTEN_QUEUE, on_message_callback=callback, auto_ack=False)
-        channel.start_consuming()
-
-    except pika.exceptions.AMQPConnectionError:
-        print("❌ Could not connect to RabbitMQ broker. Check network or credentials.")
-    except KeyboardInterrupt:
-        print("🛑 Listener stopped manually.")
-    except Exception as e:
-        print(f"❌ Listener error: {e}")
+        except pika.exceptions.AMQPConnectionError as e:
+            logging.warning(f"⚠️ RabbitMQ connection lost: {e}. Reconnecting in 5s...")
+            time.sleep(5)
+            continue
+        except Exception as e:
+            logging.error(f"❌ Listener error: {e}")
+            time.sleep(5)
+            continue
 
 if __name__ == "__main__":
-    start_listener()
+    try:
+        start_listener()
+    except KeyboardInterrupt:
+        logging.info("🛑 Listener stopped manually.")
+

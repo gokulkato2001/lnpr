@@ -1,5 +1,9 @@
-lnpr_outputs/
-received_events/
+/lnpr_outputs
+/received_events
+/new_clips
+/optimized_output
+/output
+/reference
 docker-compose.yml
-.github/
-old/
+optimized.py
+new.py
