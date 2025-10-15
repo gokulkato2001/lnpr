@@ -7,3 +7,5 @@
 docker-compose.yml
 optimized.py
 new.py
+optimized_api.py
+lpr.py
