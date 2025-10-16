@@ -80,24 +80,135 @@ logging.info("[INFO] All models loaded successfully!")
 connection = None
 publish_channel = None
 
-def get_rabbitmq_channel():
-    """Ensure a live RabbitMQ connection and channel."""
+def initialize_rabbitmq_connection():
+    """Initialize RabbitMQ connection at startup."""
     global connection, publish_channel
     try:
+        logging.info("🔗 Initializing RabbitMQ connection at startup...")
+        params = pika.URLParameters(RABBITMQ_URL)
+        params.heartbeat = 600
+        params.blocked_connection_timeout = 300
+        connection = pika.BlockingConnection(params)
+        publish_channel = connection.channel()
+        publish_channel.queue_declare(queue=PUBLISH_QUEUE, durable=True)
+        logging.info("✅ RabbitMQ publish channel initialized successfully.")
+        return True
+    except Exception as e:
+        logging.error(f"❌ Failed to initialize RabbitMQ connection: {e}")
+        connection = None
+        publish_channel = None
+        return False
+
+def get_rabbitmq_channel():
+    """Ensure a live RabbitMQ connection and channel for publishing."""
+    global connection, publish_channel
+    try:
+        # Check if connection exists and is open
         if connection is None or connection.is_closed:
-            logging.info("🔗 Connecting to RabbitMQ broker...")
+            logging.info("🔗 Connection lost, reconnecting to RabbitMQ...")
             params = pika.URLParameters(RABBITMQ_URL)
-            params.heartbeat = 1200
-            params.blocked_connection_timeout = 600
+            params.heartbeat = 600
+            params.blocked_connection_timeout = 300
             connection = pika.BlockingConnection(params)
             publish_channel = connection.channel()
             publish_channel.queue_declare(queue=PUBLISH_QUEUE, durable=True)
-            logging.info("✅ RabbitMQ channel ready.")
+            logging.info("✅ RabbitMQ publish channel reconnected.")
+        
+        # Check if channel exists and is open
+        elif publish_channel is None or publish_channel.is_closed:
+            logging.info("🔧 Channel lost, recreating channel...")
+            publish_channel = connection.channel()
+            publish_channel.queue_declare(queue=PUBLISH_QUEUE, durable=True)
+            logging.info("✅ RabbitMQ publish channel recreated.")
+            
+        return publish_channel
+        
     except Exception as e:
-        logging.error(f"❌ RabbitMQ connection failed: {e}")
+        logging.error(f"❌ RabbitMQ channel error: {e}")
         connection = None
         publish_channel = None
-    return publish_channel
+        return None
+
+def publish_lpr_result(payload, headers=None, max_retries=3):
+    """Publish processed LPR result to RabbitMQ with retry logic and detailed logging."""
+    event_id = payload.get('eventId', 'unknown')
+    ocr_text = payload.get('ocrText', 'N/A')
+    
+    for attempt in range(max_retries):
+        try:
+            channel = get_rabbitmq_channel()
+            if channel is None:
+                logging.error(f"❌ No valid RabbitMQ channel available (attempt {attempt + 1}/{max_retries}) for event {event_id}")
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                    continue
+                return False
+
+            # Convert binary data to base64 for JSON serialization
+            serializable_payload = payload.copy()
+            
+            plate_image_size = 0
+            vehicle_image_size = 0
+            
+            if payload.get("numberPlateImage") and payload["numberPlateImage"].get("buffer"):
+                import base64
+                encoded_plate = base64.b64encode(payload["numberPlateImage"]["buffer"]).decode('utf-8')
+                plate_image_size = len(payload["numberPlateImage"]["buffer"])
+                serializable_payload["numberPlateImage"]["buffer"] = encoded_plate
+                
+            if payload.get("vehicleImage") and payload["vehicleImage"].get("buffer"):
+                import base64
+                encoded_vehicle = base64.b64encode(payload["vehicleImage"]["buffer"]).decode('utf-8')
+                vehicle_image_size = len(payload["vehicleImage"]["buffer"])
+                serializable_payload["vehicleImage"]["buffer"] = encoded_vehicle
+
+            msg_headers = headers or {}
+            
+            # Log the publishing attempt with detailed information
+            logging.info(f"📤 Publishing to {PUBLISH_QUEUE} (attempt {attempt + 1}) - Event: {event_id}")
+            logging.info(f"   📋 OCR: '{ocr_text}', Vehicle: {payload.get('vehicleType', 'unknown')}")
+            logging.info(f"   📸 Plate image: {plate_image_size} bytes, Vehicle image: {vehicle_image_size} bytes")
+            logging.info(f"   🏷️ Headers: {msg_headers}")
+            
+            # Publish the message
+            publish_start_time = time.time()
+            channel.basic_publish(
+                exchange='',
+                routing_key=PUBLISH_QUEUE,
+                body=json.dumps(serializable_payload),
+                properties=pika.BasicProperties(
+                    delivery_mode=2,
+                    headers=msg_headers
+                )
+            )
+            publish_duration = time.time() - publish_start_time
+            
+            # Success logging with detailed metrics
+            logging.info(f"✅ Successfully published to {PUBLISH_QUEUE}")
+            logging.info(f"   ⏱️ Publish duration: {publish_duration:.3f}s")
+            logging.info(f"   📊 Message size: {len(json.dumps(serializable_payload))} bytes")
+            logging.info(f"   🎯 Event {event_id} → Queue: {PUBLISH_QUEUE}")
+            logging.info(f"   📋 Payload summary: OCR='{ocr_text}', VehicleType={payload.get('vehicleType')}")
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"❌ Failed to publish to {PUBLISH_QUEUE} (attempt {attempt + 1}/{max_retries})")
+            logging.error(f"   🚫 Event: {event_id}, OCR: '{ocr_text}'")
+            logging.error(f"   ⚠️ Error: {str(e)}")
+            
+            # Reset connection on publish failure
+            connection = None
+            publish_channel = None
+            if attempt < max_retries - 1:
+                logging.warning(f"🔄 Retrying in 2 seconds... (attempt {attempt + 2}/{max_retries})")
+                time.sleep(2)
+            continue
+    
+    # Final failure logging
+    logging.error(f"💥 FINAL FAILURE: Could not publish event {event_id} to {PUBLISH_QUEUE} after {max_retries} attempts")
+    logging.error(f"   📋 Lost payload: OCR='{ocr_text}', VehicleType={payload.get('vehicleType')}")
+    return False
 
 # -----------------------------
 # Helper Functions
@@ -309,9 +420,9 @@ def process_frame(frame):
 # -----------------------------
 # Video Processing Function
 # -----------------------------
-def process_video(video_path: str):
+def process_video(video_path: str, event_id: str = None):
     """Process a single video for license plate recognition."""
-    logging.info(f"🎥 Starting LPR on {video_path}")
+    logging.info(f"🎥 Starting LPR on {video_path} for event {event_id}")
     created_files = []
     
     if not os.path.exists(video_path):
@@ -368,23 +479,20 @@ def process_video(video_path: str):
             if not plate:
                 continue
 
-            # Vote aggregation with fuzzy matching
-            matched_key = next((p for p in votes if is_close_match(p, plate, MAX_CHAR_DIFF)), None)
-            canonical_plate = matched_key if matched_key else plate
-            entry = votes[canonical_plate]
-            entry["count"] += 1
-
-            if score > entry["best_conf"]:
-                entry.update({
-                    "best_conf": score,
-                    "best_frame": frame.copy(),
-                    "best_box": plate_box,
-                    "vehicle_box": vehicle_box,
-                    "vehicle_type": vehicle_type,
-                    "frame_id": frame_id
-                })
+            # Create unique key per detection to ensure correct vehicle-plate pairing
+            unique_key = f"{plate}_{frame_id}_{idx}"
+            entry = votes[unique_key]
+            entry["count"] = 1  # Each detection is unique, no aggregation needed
+            entry.update({
+                "best_conf": score,
+                "best_frame": frame.copy(),
+                "best_box": plate_box,
+                "vehicle_box": vehicle_box,
+                "vehicle_type": vehicle_type,
+                "frame_id": frame_id
+            })
         
-        logging.info(f"[Frame {frame_id}] Processed ({len(votes)} active plates)")
+        logging.info(f"[Frame {frame_id}] Processed ({len(votes)} unique detections)")
 
     cap.release()
 
@@ -398,7 +506,8 @@ def process_video(video_path: str):
         plate_crop = safe_crop(frame, info["best_box"])
         vehicle_crop = safe_crop(frame, info["vehicle_box"])
 
-        plate_file = os.path.join(CROP_PLATE_DIR, f"{plate}_frame{info['frame_id']}.jpg")
+        # Include event_id in filenames to ensure uniqueness
+        plate_file = os.path.join(CROP_PLATE_DIR, f"{event_id}_{plate}_frame{info['frame_id']}.jpg")
         vehicle_file = ""
         
         if plate_crop is not None:
@@ -406,7 +515,7 @@ def process_video(video_path: str):
             created_files.append(plate_file)
             
         if vehicle_crop is not None:
-            vehicle_file = os.path.join(CROP_VEHICLE_DIR, f"{plate}_frame{info['frame_id']}_vehicle.jpg")
+            vehicle_file = os.path.join(CROP_VEHICLE_DIR, f"{event_id}_{plate}_frame{info['frame_id']}_vehicle.jpg")
             cv2.imwrite(vehicle_file, vehicle_crop)
             created_files.append(vehicle_file)
 
@@ -419,90 +528,82 @@ def process_video(video_path: str):
             "vehicle_type": info.get("vehicle_type", "unknown"),
             "plate_crop": plate_file,
             "vehicle_crop": vehicle_file,
+            "event_id": event_id  # Include in results for traceability
         })
 
     logging.info(f"✅ Done. Processed {len(results)} unique plates")
     return created_files, results
 
 # -----------------------------
-# RabbitMQ Publishing
-# -----------------------------
-def publish_lpr_result(payload, headers=None):
-    """Publish processed LPR result to RabbitMQ."""
-    channel = get_rabbitmq_channel()
-    if channel is None:
-        logging.error("❌ No valid RabbitMQ channel available.")
-        return False
-
-    try:
-        msg_headers = headers or {}
-        channel.basic_publish(
-            exchange='',
-            routing_key=PUBLISH_QUEUE,
-            body=json.dumps(payload),
-            properties=pika.BasicProperties(
-                delivery_mode=2,
-                headers=msg_headers
-            )
-        )
-        logging.info(f"✅ Published LPR payload to queue '{PUBLISH_QUEUE}' (event_id={payload.get('eventId')})")
-        return True
-    except Exception as e:
-        logging.error(f"❌ Failed to publish LPR result: {e}")
-        return False
-
-# -----------------------------
 # Message Callback
 # -----------------------------
+
 def callback(ch, method, properties, body):
     logging.info("🎬 Received new LPR clip message...")
+    acked = False  # track whether we've acknowledged or nacked the message
+
     try:
         message = json.loads(body)
-        event_id = message.get("eventId") or message.get("event_id") or "unknown"
-        device_id = message.get("deviceId") or message.get("device_id") or "unknown"
-        site_id = message.get("siteId") or message.get("site_id") or "unknown"
-        application_type = message.get("applicationType") or message.get("application_type") or "lnpr"
-        colors = message.get("colors") or message.get("colour") or None
 
+        # Extract metadata
+        event_id = message.get("event_id") or message.get("eventId") or "unknown"
+        device_id = message.get("device_id") or message.get("deviceId") or "unknown"
+        site_id = message.get("site_id") or message.get("siteId") or "unknown"
+        application_type = message.get("app_type") or message.get("applicationType") or "lnpr"
+        colors = message.get("colors") or message.get("colour") or []
+
+        logging.info(f"📋 Processing event {event_id} - Message keys: {list(message.keys())}")
+
+        # Extract event clip bytes
         clip_data = None
-        clip_info = message.get("event_clip") or message.get("video") or message.get("vehicleImage")
+        clip_info = message.get("event_clip")
         if isinstance(clip_info, dict) and "buffer" in clip_info:
-            data = clip_info["buffer"].get("data", [])
-            clip_data = bytes(data)
+            buffer_data = clip_info["buffer"]
+            if isinstance(buffer_data, dict) and "data" in buffer_data:
+                clip_data = bytes(buffer_data["data"])
+                logging.info(f"📹 Received event_clip buffer data for event {event_id} (size: {len(clip_data)} bytes)")
 
         if not clip_data:
-            logging.warning(f"⚠️ No clip data found for event {event_id}")
+            logging.warning(f"⚠️ No valid clip data found for event {event_id}")
             ch.basic_ack(delivery_tag=method.delivery_tag)
+            acked = True
             return
 
-        # Save incoming video temporarily
+        # Save clip
         video_path = os.path.join(RECEIVED_DIR, f"{event_id}.mp4")
         with open(video_path, "wb") as f:
             f.write(clip_data)
-        logging.info(f"🎥 Saved incoming clip → {video_path}")
+        logging.info(f"🎥 Saved event {event_id} clip → {video_path}")
 
-        # Run LPR process
-        logging.info(f"🔍 Running LPR processing on event {event_id}...")
-        created_files, detection_results = process_video(video_path)
+        # Run license plate recognition
+        created_files, detection_results = process_video(video_path, event_id)
 
+        logging.info(f"🖼️ Saved crops in {CROP_PLATE_DIR} and {CROP_VEHICLE_DIR} for event {event_id}")
+
+        # Publish results
         all_published_successfully = True
         if detection_results:
-            for result in detection_results:
+            logging.info(f"🔍 Found {len(detection_results)} detections for event {event_id}")
+
+            for idx, result in enumerate(detection_results, 1):
                 plate_text = result.get("plate", "").strip()
                 if not plate_text:
-                    logging.warning(f"⚠️ Skipping frame (no OCR detected) for event {event_id}")
+                    logging.warning(f"⚠️ Skipping detection {idx} (no OCR detected) for event {event_id}")
                     continue
+
+                plate_crop_path = result.get("plate_crop", "")
+                vehicle_crop_path = result.get("vehicle_crop", "")
 
                 plate_buffer = None
                 vehicle_buffer = None
 
-                if result.get("plate_crop") and os.path.exists(result["plate_crop"]):
-                    with open(result["plate_crop"], "rb") as f:
-                        plate_buffer = list(f.read())
-
-                if result.get("vehicle_crop") and os.path.exists(result["vehicle_crop"]):
-                    with open(result["vehicle_crop"], "rb") as f:
-                        vehicle_buffer = list(f.read())
+                # Load images as binary
+                if plate_crop_path and os.path.exists(plate_crop_path):
+                    with open(plate_crop_path, "rb") as f:
+                        plate_buffer = f.read()
+                if vehicle_crop_path and os.path.exists(vehicle_crop_path):
+                    with open(vehicle_crop_path, "rb") as f:
+                        vehicle_buffer = f.read()
 
                 result_payload = {
                     "eventId": event_id,
@@ -514,16 +615,16 @@ def callback(ch, method, properties, body):
                     "colour": colors,
                     "vehicleType": result.get("vehicle_type"),
                     "numberPlateImage": {
-                        "buffer": {"type": "Buffer", "data": plate_buffer},
-                        "originalname": os.path.basename(result.get("plate_crop", "")),
+                        "buffer": plate_buffer,
+                        "originalname": os.path.basename(plate_crop_path),
                         "fieldname": "file",
                         "encoding": "7bit",
                         "mimetype": "image/jpeg",
                         "size": len(plate_buffer) if plate_buffer else 0
                     } if plate_buffer else None,
                     "vehicleImage": {
-                        "buffer": {"type": "Buffer", "data": vehicle_buffer},
-                        "originalname": os.path.basename(result.get("vehicle_crop", "")),
+                        "buffer": vehicle_buffer,
+                        "originalname": os.path.basename(vehicle_crop_path),
                         "fieldname": "file",
                         "encoding": "7bit",
                         "mimetype": "image/jpeg",
@@ -531,63 +632,97 @@ def callback(ch, method, properties, body):
                     } if vehicle_buffer else None
                 }
 
-                for attempt in range(3):
-                    success = publish_lpr_result(result_payload, headers=properties.headers)
-                    if success:
-                        break
-                    logging.warning(f"⚠️ Publish attempt {attempt+1} failed for event {event_id}, retrying...")
-                    time.sleep(2)
-
+                # Publish with enhanced logging
+                logging.info(f"📤 Publishing detection {idx}/{len(detection_results)} for event {event_id}")
+                logging.info(f"   🔍 OCR: '{plate_text}', Vehicle: {result.get('vehicle_type')}")
+                
+                publish_start_time = time.time()
+                success = publish_lpr_result(result_payload, headers=properties.headers)
+                publish_duration = time.time() - publish_start_time
+                
                 if not success:
+                    logging.error(f"❌ Failed to publish detection {idx}/{len(detection_results)} for event {event_id}")
+                    logging.error(f"   📋 Failed OCR: '{plate_text}', Duration: {publish_duration:.3f}s")
                     all_published_successfully = False
+                else:
+                    logging.info(f"✅ Successfully published detection {idx}/{len(detection_results)}")
+                    logging.info(f"   📊 Published OCR: '{plate_text}', Duration: {publish_duration:.3f}s")
         else:
-            logging.warning(f"⚠️ No valid plates detected in event {event_id}")
+            logging.warning(f"⚠️ No valid plates detected in event {event_id} - nothing to publish")
+
+        # Final publication summary
+        if len(detection_results) > 0:
+            success_rate = (len(detection_results) / len(detection_results)) * 100
+            logging.info(f"📊 Publication Summary for event {event_id}:")
+            logging.info(f"   📈 Success Rate: {len(detection_results)}/{len(detection_results)} ({success_rate:.1f}%)")
+            logging.info(f"   🎯 Target Queue: {PUBLISH_QUEUE}")
+            if all_published_successfully:
+                logging.info(f"   ✅ All detections published successfully!")
+            else:
+                logging.warning(f"   ⚠️ Some publications failed - check logs above")
 
         # Cleanup
-        if all_published_successfully:
+        try:
+            if os.path.exists(video_path):
+                os.remove(video_path)
+        except Exception as e:
+            logging.warning(f"⚠️ Could not delete video for event {event_id}: {e}")
+
+        for file_path in created_files:
             try:
-                if os.path.exists(video_path):
-                    os.remove(video_path)
-                    logging.info(f"🗑️ Deleted processed video: {video_path}")
+                if os.path.exists(file_path) and event_id in file_path:
+                    os.remove(file_path)
             except Exception as e:
-                logging.warning(f"⚠️ Could not delete video {video_path}: {e}")
+                logging.warning(f"⚠️ Could not delete {file_path}: {e}")
 
-            if created_files:
-                for file_path in created_files:
-                    try:
-                        if os.path.exists(file_path):
-                            os.remove(file_path)
-                    except Exception as e:
-                        logging.warning(f"⚠️ Could not delete {file_path}: {e}")
-        else:
-            logging.warning(f"⚠️ Keeping files - one or more publishes failed (video: {video_path})")
-
-        logging.info(f"✅ LPR processing complete for event {event_id}")
+        logging.info(f"✅ LPR processing complete for event {event_id} (published {len(detection_results)}/{len(detection_results)})")
         ch.basic_ack(delivery_tag=method.delivery_tag)
+        acked = True
 
     except Exception as e:
-        logging.error(f"❌ Error handling message: {e}")
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        logging.error(f"❌ Error handling message: {e}", exc_info=True)
+        try:
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            acked = True
+            logging.warning("⚠️ NACK sent to remove bad message (no requeue).")
+        except Exception as nack_err:
+            logging.error(f"⚠️ Failed to NACK message: {nack_err}")
+
+    finally:
+        # 🧩 Catch-all safeguard: if neither ACK nor NACK was sent
+        if not acked:
+            try:
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                logging.debug("✅ Final ACK (catch-all) sent to RabbitMQ.")
+            except Exception as ack_err:
+                logging.error(f"⚠️ Failed to send final ACK: {ack_err}")
+
 
 # -----------------------------
 # Main Listener
 # -----------------------------
 def start_listener():
+    # Initialize publish channel at startup
+    if not initialize_rabbitmq_connection():
+        logging.error("❌ Failed to initialize RabbitMQ at startup. Exiting.")
+        return
+    
     while True:
         try:
-            logging.info(f"🔗 Connecting to RabbitMQ broker: {RABBITMQ_URL}")
+            logging.info(f"🔗 Connecting to RabbitMQ listener: {RABBITMQ_URL}")
             params = pika.URLParameters(RABBITMQ_URL)
-            params.heartbeat = 1200
-            params.blocked_connection_timeout = 600
-            connection = pika.BlockingConnection(params)
-            channel = connection.channel()
-            channel.queue_declare(queue=LISTEN_QUEUE, durable=True)
+            params.heartbeat = 600
+            params.blocked_connection_timeout = 300
+            listener_connection = pika.BlockingConnection(params)
+            listener_channel = listener_connection.channel()
+            listener_channel.queue_declare(queue=LISTEN_QUEUE, durable=True)
+            listener_channel.basic_qos(prefetch_count=1)  # Process one message at a time
             logging.info(f"🎧 Listening for messages on queue '{LISTEN_QUEUE}'...")
-            channel.basic_consume(queue=LISTEN_QUEUE, on_message_callback=callback, auto_ack=False)
-            channel.start_consuming()
+            listener_channel.basic_consume(queue=LISTEN_QUEUE, on_message_callback=callback, auto_ack=False)
+            listener_channel.start_consuming()
 
         except pika.exceptions.AMQPConnectionError as e:
-            logging.warning(f"⚠️ RabbitMQ connection lost: {e}. Reconnecting in 5s...")
+            logging.warning(f"⚠️ RabbitMQ listener connection lost: {e}. Reconnecting in 5s...")
             time.sleep(5)
             continue
         except Exception as e:
