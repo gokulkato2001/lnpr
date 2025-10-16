@@ -602,7 +602,7 @@ def callback(ch, method, properties, body):
         device_id = message.get("device_id") or message.get("deviceId") or "unknown"
         site_id = message.get("site_id") or message.get("siteId") or "unknown"
         application_type = message.get("app_type") or message.get("applicationType") or "lnpr"
-        colors = message.get("colors") or message.get("colour") or []
+        colors = message.get("colors") or message.get("colour")
 
         logging.info(f"📋 Processing event {event_id} - Message keys: {list(message.keys())}")
 
