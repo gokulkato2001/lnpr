@@ -391,16 +391,40 @@ def process_frame(frame):
         x1, y1, x2, y2 = map(int, box.xyxy[0])
         
         # Per-vehicle motion detection
+        # vehicle_motion_mask = fg_mask[y1:y2, x1:x2]
+        # if vehicle_motion_mask.size == 0:
+        #     continue
+            
+        # vehicle_motion_level = (cv2.countNonZero(vehicle_motion_mask) / 
+        #                        float(vehicle_motion_mask.shape[0] * vehicle_motion_mask.shape[1]))
+        
+        # # Skip stationary vehicles
+        # if vehicle_motion_level < MOTION_THRESHOLD:
+        #     logging.debug(f"[VEHICLE] Stationary vehicle skipped - motion: {vehicle_motion_level:.4f}")
+        #     continue
+
+        # Extract motion mask region for this vehicle
         vehicle_motion_mask = fg_mask[y1:y2, x1:x2]
         if vehicle_motion_mask.size == 0:
             continue
-            
-        vehicle_motion_level = (cv2.countNonZero(vehicle_motion_mask) / 
-                               float(vehicle_motion_mask.shape[0] * vehicle_motion_mask.shape[1]))
-        
-        # Skip stationary vehicles
+
+        # Calculate how much of the vehicle region is moving
+        vehicle_motion_level = (
+            cv2.countNonZero(vehicle_motion_mask) /
+            float(vehicle_motion_mask.shape[0] * vehicle_motion_mask.shape[1])
+        )
+
+        # 🔍 Improved motion filtering and logging
         if vehicle_motion_level < MOTION_THRESHOLD:
-            logging.debug(f"[VEHICLE] Stationary vehicle skipped - motion: {vehicle_motion_level:.4f}")
+            logging.debug(f"[VEHICLE] ❌ Skipped - very low motion ({vehicle_motion_level:.3f})")
+            continue
+        elif vehicle_motion_level < 0.1:
+            logging.info(f"[VEHICLE] ⚠️ Minimal motion ({vehicle_motion_level:.3f}) - may be static")
+        else:
+            logging.debug(f"[VEHICLE] ✅ Moving vehicle detected ({vehicle_motion_level:.3f})")
+
+        # Only continue to plate + OCR detection if vehicle is moving
+        if vehicle_motion_level < MOTION_THRESHOLD:
             continue
             
         logging.debug(f"[VEHICLE] Processing moving vehicle - motion: {vehicle_motion_level:.4f}")
