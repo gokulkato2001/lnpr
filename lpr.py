@@ -25,7 +25,8 @@ OCR_CFG = "ocr/rcoin_oloyin_vier_minima.cfg"
 OCR_WEIGHTS = "ocr/rcoin_oloyin_vier_minima.weights"
 
 # Thresholds & behavior
-CONF_THRESHOLD = float(os.getenv("CONF_THRESHOLD", 0.58))   # used by YOLOv3 plate/OCR
+LP_CONF_THRESHOLD = float(os.getenv("LP_CONF_THRESHOLD", 0.6))    # License plate detection threshold
+OCR_CONF_THRESHOLD = float(os.getenv("OCR_CONF_THRESHOLD", 0.7))  # OCR character detection threshold
 NMS_THRESHOLD  = float(os.getenv("NMS_THRESHOLD", 0.7))
 FRAME_SKIP     = int(os.getenv("FRAME_SKIP", 10))           # process only these interval frames
 MAX_CHAR_DIFF  = int(os.getenv("MAX_CHAR_DIFF", 2))
@@ -89,10 +90,14 @@ def _get_output_layers(net):
     layer_names = net.getLayerNames()
     return [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
 
-def _detect_yolov3(net, frame):
+def _detect_yolov3(net, frame, conf_threshold=None):
     """Generic YOLOv3 (OpenCV DNN) detector; returns list of dicts: x,y,w,h,confidence,class_id"""
     if frame is None or frame.size == 0:
         return []
+    
+    # Use provided threshold or fall back to LP_CONF_THRESHOLD as default
+    threshold = conf_threshold if conf_threshold is not None else LP_CONF_THRESHOLD
+    
     blob = cv2.dnn.blobFromImage(frame, 1/255.0, (416, 416), swapRB=True, crop=False)
     net.setInput(blob)
     outs = net.forward(_get_output_layers(net))
@@ -107,7 +112,7 @@ def _detect_yolov3(net, frame):
                 continue
             class_id = int(np.argmax(scores))
             confidence = float(scores[class_id])
-            if confidence > CONF_THRESHOLD:
+            if confidence > threshold:  # Use the specific threshold
                 center_x, center_y = int(detection[0] * width), int(detection[1] * height)
                 w, h = int(detection[2] * width), int(detection[3] * height)
                 x, y = int(center_x - w / 2), int(center_y - h / 2)
@@ -115,7 +120,7 @@ def _detect_yolov3(net, frame):
                 confidences.append(confidence)
                 class_ids.append(class_id)
 
-    indices = cv2.dnn.NMSBoxes(boxes, confidences, CONF_THRESHOLD, NMS_THRESHOLD)
+    indices = cv2.dnn.NMSBoxes(boxes, confidences, threshold, NMS_THRESHOLD)
     results = []
     if len(indices) > 0:
         for i in indices.flatten():
@@ -283,7 +288,7 @@ def process_video(video_path: str):
                 continue
 
             # ---------------- Plate Detection (YOLOv3 on vehicle crop) ----------------
-            lp_detections = _detect_yolov3(_lp_net, vehicle_crop)
+            lp_detections = _detect_yolov3(_lp_net, vehicle_crop, LP_CONF_THRESHOLD)
             lp_detections = _clean_objs(lp_detections)
             lp_detections = _remove_nested(lp_detections)
             if len(lp_detections) == 0:
@@ -307,7 +312,7 @@ def process_video(video_path: str):
                     continue
 
                 # ---------------- OCR Detection (YOLOv3) ----------------
-                ocr_dets = _detect_yolov3(_ocr_net, lp_crop)
+                ocr_dets = _detect_yolov3(_ocr_net, lp_crop, OCR_CONF_THRESHOLD)
                 ocr_dets = _clean_objs(ocr_dets)
                 ocr_dets = sorted(ocr_dets, key=lambda d: d["x"])
 

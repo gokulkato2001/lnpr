@@ -44,7 +44,8 @@ OCR_WEIGHTS = "ocr/rcoin_oloyin_vier_minima.weights"
 
 # Detection Parameters
 OCR_CLASSES = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"
-CONF_THRESHOLD = float(os.getenv("CONF_THRESHOLD", 0.58))
+LP_CONF_THRESHOLD = float(os.getenv("LP_CONF_THRESHOLD", 0.6))    # License plate detection threshold
+OCR_CONF_THRESHOLD = float(os.getenv("OCR_CONF_THRESHOLD", 0.7))  # OCR character detection threshold
 NMS_THRESHOLD = float(os.getenv("NMS_THRESHOLD", 0.7))
 FRAME_SKIP = int(os.getenv("FRAME_SKIP", 10))
 MAX_CHAR_DIFF = int(os.getenv("MAX_CHAR_DIFF", 2))
@@ -305,7 +306,10 @@ def get_output_layers(net):
     layer_names = net.getLayerNames()
     return [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
 
-def detect_yolov3(net, frame):
+def detect_yolov3(net, frame, conf_threshold=None):
+    # Use provided threshold or fall back to LP_CONF_THRESHOLD as default
+    threshold = conf_threshold if conf_threshold is not None else LP_CONF_THRESHOLD
+    
     blob = cv2.dnn.blobFromImage(frame, 1/255.0, (416, 416), swapRB=True, crop=False)
     net.setInput(blob)
     outs = net.forward(get_output_layers(net))
@@ -317,7 +321,7 @@ def detect_yolov3(net, frame):
             scores = detection[5:]
             class_id = int(np.argmax(scores))
             confidence = scores[class_id]
-            if confidence > CONF_THRESHOLD:
+            if confidence > threshold:  # Use the specific threshold
                 center_x, center_y = int(detection[0] * width), int(detection[1] * height)
                 w, h = int(detection[2] * width), int(detection[3] * height)
                 x, y = int(center_x - w / 2), int(center_y - h / 2)
@@ -325,7 +329,7 @@ def detect_yolov3(net, frame):
                 confidences.append(float(confidence))
                 class_ids.append(class_id)
 
-    indices = cv2.dnn.NMSBoxes(boxes, confidences, CONF_THRESHOLD, NMS_THRESHOLD)
+    indices = cv2.dnn.NMSBoxes(boxes, confidences, threshold, NMS_THRESHOLD)
     results = []
     if len(indices) > 0:
         for i in indices.flatten():
@@ -406,7 +410,7 @@ def process_frame(frame):
             continue
 
         # License plate detection on vehicle crop
-        lp_detections = detect_yolov3(lp_net, vehicle_crop)
+        lp_detections = detect_yolov3(lp_net, vehicle_crop, LP_CONF_THRESHOLD)
         lp_detections = clean_objs(lp_detections)
         lp_detections = remove_nested(lp_detections)
         if len(lp_detections) == 0:
@@ -420,7 +424,7 @@ def process_frame(frame):
                 continue
 
             # OCR detection on license plate crop
-            ocr_detections = detect_yolov3(ocr_net, lp_crop)
+            ocr_detections = detect_yolov3(ocr_net, lp_crop, OCR_CONF_THRESHOLD)
             ocr_detections = clean_objs(ocr_detections)
             ocr_detections = sorted(ocr_detections, key=lambda d: d["x"])
 
