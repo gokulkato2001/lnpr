@@ -133,7 +133,7 @@ def publish_lpr_result(payload, headers=None, max_retries=3):
     """Publish processed LPR result to RabbitMQ with retry logic and detailed logging."""
     event_id = payload.get('eventId', 'unknown')
     ocr_text = payload.get('ocrText', 'N/A')
-    
+
     for attempt in range(max_retries):
         try:
             channel = get_rabbitmq_channel()
@@ -144,85 +144,75 @@ def publish_lpr_result(payload, headers=None, max_retries=3):
                     continue
                 return False
 
-            # Convert binary data to base64 for JSON serialization
-            serializable_payload = payload.copy()
-            
+            # ✅ No base64 encoding anymore — payload already in correct format
+            serializable_payload = payload
+
             plate_image_size = 0
             vehicle_image_size = 0
-            
-            if payload.get("numberPlateImage") and payload["numberPlateImage"].get("buffer"):
-                import base64
-                encoded_plate = base64.b64encode(payload["numberPlateImage"]["buffer"]).decode('utf-8')
-                plate_image_size = len(payload["numberPlateImage"]["buffer"])
-                serializable_payload["numberPlateImage"]["buffer"] = encoded_plate
-                
-            if payload.get("vehicleImage") and payload["vehicleImage"].get("buffer"):
-                import base64
-                encoded_vehicle = base64.b64encode(payload["vehicleImage"]["buffer"]).decode('utf-8')
-                vehicle_image_size = len(payload["vehicleImage"]["buffer"])
-                serializable_payload["vehicleImage"]["buffer"] = encoded_vehicle
+
+            if payload.get("numberPlateImage"):
+                plate_image_size = payload["numberPlateImage"].get("size", 0)
+            if payload.get("vehicleImage"):
+                vehicle_image_size = payload["vehicleImage"].get("size", 0)
 
             msg_headers = headers or {}
 
-            # Create sanitized payload for logging (without base64 image data)
-            log_payload = {k: v for k, v in serializable_payload.items() 
-                          if k not in ['numberPlateImage', 'vehicleImage']}
-            
-            # Add image metadata for logging
+            # -------------------------
+            # Build safe log payload
+            # -------------------------
+            log_payload = {k: v for k, v in serializable_payload.items()
+                           if k not in ['numberPlateImage', 'vehicleImage']}
+
+            # Add image metadata (compute buffer length correctly)
             if serializable_payload.get('numberPlateImage'):
+                buf = serializable_payload['numberPlateImage'].get('buffer', {})
+                buffer_len = len(buf.get('data', [])) if isinstance(buf, dict) else 0
                 log_payload['numberPlateImage'] = {
                     'originalname': serializable_payload['numberPlateImage'].get('originalname'),
                     'mimetype': serializable_payload['numberPlateImage'].get('mimetype'),
                     'size': serializable_payload['numberPlateImage'].get('size'),
-                    'buffer_length': len(serializable_payload['numberPlateImage'].get('buffer', ''))
-                }
-            
-            if serializable_payload.get('vehicleImage'):
-                log_payload['vehicleImage'] = {
-                    'originalname': serializable_payload['vehicleImage'].get('originalname'),
-                    'mimetype': serializable_payload['vehicleImage'].get('mimetype'), 
-                    'size': serializable_payload['vehicleImage'].get('size'),
-                    'buffer_length': len(serializable_payload['vehicleImage'].get('buffer', ''))
+                    'buffer_length': buffer_len
                 }
 
-            # Log the publishing attempt with detailed information
+            if serializable_payload.get('vehicleImage'):
+                buf = serializable_payload['vehicleImage'].get('buffer', {})
+                buffer_len = len(buf.get('data', [])) if isinstance(buf, dict) else 0
+                log_payload['vehicleImage'] = {
+                    'originalname': serializable_payload['vehicleImage'].get('originalname'),
+                    'mimetype': serializable_payload['vehicleImage'].get('mimetype'),
+                    'size': serializable_payload['vehicleImage'].get('size'),
+                    'buffer_length': buffer_len
+                }
+
+            # -------------------------
+            # Detailed publishing logs
+            # -------------------------
             logging.info(f"📤 Publishing to {PUBLISH_QUEUE} (attempt {attempt + 1}) - Event: {event_id}")
             logging.info(f"   📋 OCR: '{ocr_text}', Vehicle: {payload.get('vehicleType', 'unknown')}")
             logging.info(f"   📸 Plate image: {plate_image_size} bytes, Vehicle image: {vehicle_image_size} bytes")
             logging.info(f"   🏷️ Headers: {msg_headers}")
 
-            # Log the complete payload structure (without binary data)
             logging.info(f"📦 Complete payload structure being published:")
             logging.info(f"   {json.dumps(log_payload, indent=2, default=str)}")
 
-            # Prepare payload as bytes
+            # Prepare message body
             body_json = json.dumps(serializable_payload)
             body_bytes = body_json.encode("utf-8")
-            
-            # SIMPLE BODY LOG - what you requested
-            logging.info(f"📄 BODY CONTENT: {body_json}")
-            
-            # Log message size details
+
+            # Log summary info
             logging.info(f"📏 Message size details:")
             logging.info(f"   📊 JSON payload size: {len(body_json)} characters")
-            logging.info(f"   📊 UTF-8 encoded size: {len(body_bytes)} bytes")
+            logging.info(f"   📊 Encoded size: {len(body_bytes)} bytes")
             logging.info(f"   📊 Headers size: {len(str(msg_headers))} bytes")
 
-            # Log routing details
-            logging.info(f"🎯 Publishing details:")
-            logging.info(f"   📮 Exchange: '' (default)")
-            logging.info(f"   🔑 Routing key: {PUBLISH_QUEUE}")
-            logging.info(f"   💾 Delivery mode: 2 (persistent)")
-            logging.info(f"   🏷️ Headers count: {len(msg_headers)} items")
-
-            # Log first and last few characters of the actual body for verification
             if len(body_json) > 200:
-                logging.info(f"📄 Body preview (first 100 chars): {body_json[:100]}...")
-                logging.info(f"📄 Body preview (last 100 chars): ...{body_json[-100:]}")
+                logging.info(f"📄 Body preview (first 100): {body_json[:100]} ... (last 100): ...{body_json[-100:]}")
             else:
                 logging.info(f"📄 Complete body: {body_json}")
 
-            # Publish the message
+            # -------------------------
+            # Publish to RabbitMQ
+            # -------------------------
             publish_start_time = time.time()
             channel.basic_publish(
                 exchange='',
@@ -235,7 +225,7 @@ def publish_lpr_result(payload, headers=None, max_retries=3):
             )
             publish_duration = time.time() - publish_start_time
 
-            # Success logging with detailed metrics
+            # Success logging
             logging.info(f"✅ Successfully published to {PUBLISH_QUEUE}")
             logging.info(f"   ⏱️ Publish duration: {publish_duration:.3f}s")
             logging.info(f"   📊 Total message size: {len(body_bytes)} bytes")
@@ -243,24 +233,160 @@ def publish_lpr_result(payload, headers=None, max_retries=3):
             logging.info(f"   📋 Final payload summary: OCR='{ocr_text}', VehicleType={payload.get('vehicleType')}")
             
             return True
-            
+
         except Exception as e:
             logging.error(f"❌ Failed to publish to {PUBLISH_QUEUE} (attempt {attempt + 1}/{max_retries})")
             logging.error(f"   🚫 Event: {event_id}, OCR: '{ocr_text}'")
             logging.error(f"   ⚠️ Error: {str(e)}")
-            
-            # Reset connection on publish failure
+
+            # Reset connection on failure
+            global connection, publish_channel
             connection = None
             publish_channel = None
+
             if attempt < max_retries - 1:
                 logging.warning(f"🔄 Retrying in 2 seconds... (attempt {attempt + 2}/{max_retries})")
                 time.sleep(2)
             continue
-    
-    # Final failure logging
-    logging.error(f"💥 FINAL FAILURE: Could not publish event {event_id} to {PUBLISH_QUEUE} after {max_retries} attempts")
+
+    # If all retries failed
+    logging.error(f"💥 FINAL FAILURE: Could not publish event {event_id} after {max_retries} attempts")
     logging.error(f"   📋 Lost payload: OCR='{ocr_text}', VehicleType={payload.get('vehicleType')}")
     return False
+
+
+# def publish_lpr_result(payload, headers=None, max_retries=3):
+#     """Publish processed LPR result to RabbitMQ with retry logic and detailed logging."""
+#     event_id = payload.get('eventId', 'unknown')
+#     ocr_text = payload.get('ocrText', 'N/A')
+    
+#     for attempt in range(max_retries):
+#         try:
+#             channel = get_rabbitmq_channel()
+#             if channel is None:
+#                 logging.error(f"❌ No valid RabbitMQ channel available (attempt {attempt + 1}/{max_retries}) for event {event_id}")
+#                 if attempt < max_retries - 1:
+#                     time.sleep(2)
+#                     continue
+#                 return False
+
+#             # Convert binary data to base64 for JSON serialization
+#             serializable_payload = payload.copy()
+            
+#             plate_image_size = 0
+#             vehicle_image_size = 0
+            
+#             if payload.get("numberPlateImage") and payload["numberPlateImage"].get("buffer"):
+#                 import base64
+#                 encoded_plate = base64.b64encode(payload["numberPlateImage"]["buffer"]).decode('utf-8')
+#                 plate_image_size = len(payload["numberPlateImage"]["buffer"])
+#                 serializable_payload["numberPlateImage"]["buffer"] = encoded_plate
+                
+#             if payload.get("vehicleImage") and payload["vehicleImage"].get("buffer"):
+#                 import base64
+#                 encoded_vehicle = base64.b64encode(payload["vehicleImage"]["buffer"]).decode('utf-8')
+#                 vehicle_image_size = len(payload["vehicleImage"]["buffer"])
+#                 serializable_payload["vehicleImage"]["buffer"] = encoded_vehicle
+
+#             msg_headers = headers or {}
+
+#             # Create sanitized payload for logging (without base64 image data)
+#             log_payload = {k: v for k, v in serializable_payload.items() 
+#                           if k not in ['numberPlateImage', 'vehicleImage']}
+            
+#             # Add image metadata for logging
+#             if serializable_payload.get('numberPlateImage'):
+#                 log_payload['numberPlateImage'] = {
+#                     'originalname': serializable_payload['numberPlateImage'].get('originalname'),
+#                     'mimetype': serializable_payload['numberPlateImage'].get('mimetype'),
+#                     'size': serializable_payload['numberPlateImage'].get('size'),
+#                     'buffer_length': len(serializable_payload['numberPlateImage'].get('buffer', ''))
+#                 }
+            
+#             if serializable_payload.get('vehicleImage'):
+#                 log_payload['vehicleImage'] = {
+#                     'originalname': serializable_payload['vehicleImage'].get('originalname'),
+#                     'mimetype': serializable_payload['vehicleImage'].get('mimetype'), 
+#                     'size': serializable_payload['vehicleImage'].get('size'),
+#                     'buffer_length': len(serializable_payload['vehicleImage'].get('buffer', ''))
+#                 }
+
+#             # Log the publishing attempt with detailed information
+#             logging.info(f"📤 Publishing to {PUBLISH_QUEUE} (attempt {attempt + 1}) - Event: {event_id}")
+#             logging.info(f"   📋 OCR: '{ocr_text}', Vehicle: {payload.get('vehicleType', 'unknown')}")
+#             logging.info(f"   📸 Plate image: {plate_image_size} bytes, Vehicle image: {vehicle_image_size} bytes")
+#             logging.info(f"   🏷️ Headers: {msg_headers}")
+
+#             # Log the complete payload structure (without binary data)
+#             logging.info(f"📦 Complete payload structure being published:")
+#             logging.info(f"   {json.dumps(log_payload, indent=2, default=str)}")
+
+#             # Prepare payload as bytes
+#             body_json = json.dumps(serializable_payload)
+#             body_bytes = body_json.encode("utf-8")
+            
+#             # SIMPLE BODY LOG - what you requested
+#             logging.info(f"📄 BODY CONTENT: {body_json}")
+            
+#             # Log message size details
+#             logging.info(f"📏 Message size details:")
+#             logging.info(f"   📊 JSON payload size: {len(body_json)} characters")
+#             logging.info(f"   📊 UTF-8 encoded size: {len(body_bytes)} bytes")
+#             logging.info(f"   📊 Headers size: {len(str(msg_headers))} bytes")
+
+#             # Log routing details
+#             logging.info(f"🎯 Publishing details:")
+#             logging.info(f"   📮 Exchange: '' (default)")
+#             logging.info(f"   🔑 Routing key: {PUBLISH_QUEUE}")
+#             logging.info(f"   💾 Delivery mode: 2 (persistent)")
+#             logging.info(f"   🏷️ Headers count: {len(msg_headers)} items")
+
+#             # Log first and last few characters of the actual body for verification
+#             if len(body_json) > 200:
+#                 logging.info(f"📄 Body preview (first 100 chars): {body_json[:100]}...")
+#                 logging.info(f"📄 Body preview (last 100 chars): ...{body_json[-100:]}")
+#             else:
+#                 logging.info(f"📄 Complete body: {body_json}")
+
+#             # Publish the message
+#             publish_start_time = time.time()
+#             channel.basic_publish(
+#                 exchange='',
+#                 routing_key=PUBLISH_QUEUE,
+#                 body=body_bytes,
+#                 properties=pika.BasicProperties(
+#                     delivery_mode=2,  # persistent message
+#                     headers=msg_headers
+#                 )
+#             )
+#             publish_duration = time.time() - publish_start_time
+
+#             # Success logging with detailed metrics
+#             logging.info(f"✅ Successfully published to {PUBLISH_QUEUE}")
+#             logging.info(f"   ⏱️ Publish duration: {publish_duration:.3f}s")
+#             logging.info(f"   📊 Total message size: {len(body_bytes)} bytes")
+#             logging.info(f"   🎯 Event {event_id} → Queue: {PUBLISH_QUEUE}")
+#             logging.info(f"   📋 Final payload summary: OCR='{ocr_text}', VehicleType={payload.get('vehicleType')}")
+            
+#             return True
+            
+#         except Exception as e:
+#             logging.error(f"❌ Failed to publish to {PUBLISH_QUEUE} (attempt {attempt + 1}/{max_retries})")
+#             logging.error(f"   🚫 Event: {event_id}, OCR: '{ocr_text}'")
+#             logging.error(f"   ⚠️ Error: {str(e)}")
+            
+#             # Reset connection on publish failure
+#             connection = None
+#             publish_channel = None
+#             if attempt < max_retries - 1:
+#                 logging.warning(f"🔄 Retrying in 2 seconds... (attempt {attempt + 2}/{max_retries})")
+#                 time.sleep(2)
+#             continue
+    
+#     # Final failure logging
+#     logging.error(f"💥 FINAL FAILURE: Could not publish event {event_id} to {PUBLISH_QUEUE} after {max_retries} attempts")
+#     logging.error(f"   📋 Lost payload: OCR='{ocr_text}', VehicleType={payload.get('vehicleType')}")
+#     return False
 
 # -----------------------------
 # Helper Functions
@@ -590,6 +716,19 @@ def process_video(video_path: str, event_id: str = None):
 # Message Callback
 # -----------------------------
 
+def make_image_payload(buffer, file_path):
+    """Convert binary image data to Node.js-compatible Buffer structure."""
+    if not buffer:
+        return None
+    return {
+        "buffer": {"type": "Buffer", "data": list(buffer)},  # 👈 Node.js Buffer JSON format
+        "originalname": os.path.basename(file_path),
+        "fieldname": "file",
+        "encoding": "7bit",
+        "mimetype": "image/jpeg",
+        "size": len(buffer)
+    }
+
 def callback(ch, method, properties, body):
     logging.info("🎬 Received new LPR clip message...")
     acked = False  # track whether we've acknowledged or nacked the message
@@ -664,24 +803,12 @@ def callback(ch, method, properties, body):
                     "applicationType": application_type,
                     "deviceId": device_id,
                     "siteId": site_id,
-                    "colour": colors,
+                    "colour": colors,  # Keep as-is (string or JSON from message)
                     "vehicleType": result.get("vehicle_type"),
-                    "numberPlateImage": {
-                        "buffer": plate_buffer,
-                        "originalname": os.path.basename(plate_crop_path),
-                        "fieldname": "file",
-                        "encoding": "7bit",
-                        "mimetype": "image/jpeg",
-                        "size": len(plate_buffer) if plate_buffer else 0
-                    } if plate_buffer else None,
-                    "vehicleImage": {
-                        "buffer": vehicle_buffer,
-                        "originalname": os.path.basename(vehicle_crop_path),
-                        "fieldname": "file",
-                        "encoding": "7bit",
-                        "mimetype": "image/jpeg",
-                        "size": len(vehicle_buffer) if vehicle_buffer else 0
-                    } if vehicle_buffer else None
+
+                    # ✅ Use Node.js-compatible buffer structures
+                    "numberPlateImage": make_image_payload(plate_buffer, plate_crop_path),
+                    "vehicleImage": make_image_payload(vehicle_buffer, vehicle_crop_path)
                 }
 
                 # Publish with enhanced logging
