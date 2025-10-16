@@ -255,139 +255,6 @@ def publish_lpr_result(payload, headers=None, max_retries=3):
     return False
 
 
-# def publish_lpr_result(payload, headers=None, max_retries=3):
-#     """Publish processed LPR result to RabbitMQ with retry logic and detailed logging."""
-#     event_id = payload.get('eventId', 'unknown')
-#     ocr_text = payload.get('ocrText', 'N/A')
-    
-#     for attempt in range(max_retries):
-#         try:
-#             channel = get_rabbitmq_channel()
-#             if channel is None:
-#                 logging.error(f"❌ No valid RabbitMQ channel available (attempt {attempt + 1}/{max_retries}) for event {event_id}")
-#                 if attempt < max_retries - 1:
-#                     time.sleep(2)
-#                     continue
-#                 return False
-
-#             # Convert binary data to base64 for JSON serialization
-#             serializable_payload = payload.copy()
-            
-#             plate_image_size = 0
-#             vehicle_image_size = 0
-            
-#             if payload.get("numberPlateImage") and payload["numberPlateImage"].get("buffer"):
-#                 import base64
-#                 encoded_plate = base64.b64encode(payload["numberPlateImage"]["buffer"]).decode('utf-8')
-#                 plate_image_size = len(payload["numberPlateImage"]["buffer"])
-#                 serializable_payload["numberPlateImage"]["buffer"] = encoded_plate
-                
-#             if payload.get("vehicleImage") and payload["vehicleImage"].get("buffer"):
-#                 import base64
-#                 encoded_vehicle = base64.b64encode(payload["vehicleImage"]["buffer"]).decode('utf-8')
-#                 vehicle_image_size = len(payload["vehicleImage"]["buffer"])
-#                 serializable_payload["vehicleImage"]["buffer"] = encoded_vehicle
-
-#             msg_headers = headers or {}
-
-#             # Create sanitized payload for logging (without base64 image data)
-#             log_payload = {k: v for k, v in serializable_payload.items() 
-#                           if k not in ['numberPlateImage', 'vehicleImage']}
-            
-#             # Add image metadata for logging
-#             if serializable_payload.get('numberPlateImage'):
-#                 log_payload['numberPlateImage'] = {
-#                     'originalname': serializable_payload['numberPlateImage'].get('originalname'),
-#                     'mimetype': serializable_payload['numberPlateImage'].get('mimetype'),
-#                     'size': serializable_payload['numberPlateImage'].get('size'),
-#                     'buffer_length': len(serializable_payload['numberPlateImage'].get('buffer', ''))
-#                 }
-            
-#             if serializable_payload.get('vehicleImage'):
-#                 log_payload['vehicleImage'] = {
-#                     'originalname': serializable_payload['vehicleImage'].get('originalname'),
-#                     'mimetype': serializable_payload['vehicleImage'].get('mimetype'), 
-#                     'size': serializable_payload['vehicleImage'].get('size'),
-#                     'buffer_length': len(serializable_payload['vehicleImage'].get('buffer', ''))
-#                 }
-
-#             # Log the publishing attempt with detailed information
-#             logging.info(f"📤 Publishing to {PUBLISH_QUEUE} (attempt {attempt + 1}) - Event: {event_id}")
-#             logging.info(f"   📋 OCR: '{ocr_text}', Vehicle: {payload.get('vehicleType', 'unknown')}")
-#             logging.info(f"   📸 Plate image: {plate_image_size} bytes, Vehicle image: {vehicle_image_size} bytes")
-#             logging.info(f"   🏷️ Headers: {msg_headers}")
-
-#             # Log the complete payload structure (without binary data)
-#             logging.info(f"📦 Complete payload structure being published:")
-#             logging.info(f"   {json.dumps(log_payload, indent=2, default=str)}")
-
-#             # Prepare payload as bytes
-#             body_json = json.dumps(serializable_payload)
-#             body_bytes = body_json.encode("utf-8")
-            
-#             # SIMPLE BODY LOG - what you requested
-#             logging.info(f"📄 BODY CONTENT: {body_json}")
-            
-#             # Log message size details
-#             logging.info(f"📏 Message size details:")
-#             logging.info(f"   📊 JSON payload size: {len(body_json)} characters")
-#             logging.info(f"   📊 UTF-8 encoded size: {len(body_bytes)} bytes")
-#             logging.info(f"   📊 Headers size: {len(str(msg_headers))} bytes")
-
-#             # Log routing details
-#             logging.info(f"🎯 Publishing details:")
-#             logging.info(f"   📮 Exchange: '' (default)")
-#             logging.info(f"   🔑 Routing key: {PUBLISH_QUEUE}")
-#             logging.info(f"   💾 Delivery mode: 2 (persistent)")
-#             logging.info(f"   🏷️ Headers count: {len(msg_headers)} items")
-
-#             # Log first and last few characters of the actual body for verification
-#             if len(body_json) > 200:
-#                 logging.info(f"📄 Body preview (first 100 chars): {body_json[:100]}...")
-#                 logging.info(f"📄 Body preview (last 100 chars): ...{body_json[-100:]}")
-#             else:
-#                 logging.info(f"📄 Complete body: {body_json}")
-
-#             # Publish the message
-#             publish_start_time = time.time()
-#             channel.basic_publish(
-#                 exchange='',
-#                 routing_key=PUBLISH_QUEUE,
-#                 body=body_bytes,
-#                 properties=pika.BasicProperties(
-#                     delivery_mode=2,  # persistent message
-#                     headers=msg_headers
-#                 )
-#             )
-#             publish_duration = time.time() - publish_start_time
-
-#             # Success logging with detailed metrics
-#             logging.info(f"✅ Successfully published to {PUBLISH_QUEUE}")
-#             logging.info(f"   ⏱️ Publish duration: {publish_duration:.3f}s")
-#             logging.info(f"   📊 Total message size: {len(body_bytes)} bytes")
-#             logging.info(f"   🎯 Event {event_id} → Queue: {PUBLISH_QUEUE}")
-#             logging.info(f"   📋 Final payload summary: OCR='{ocr_text}', VehicleType={payload.get('vehicleType')}")
-            
-#             return True
-            
-#         except Exception as e:
-#             logging.error(f"❌ Failed to publish to {PUBLISH_QUEUE} (attempt {attempt + 1}/{max_retries})")
-#             logging.error(f"   🚫 Event: {event_id}, OCR: '{ocr_text}'")
-#             logging.error(f"   ⚠️ Error: {str(e)}")
-            
-#             # Reset connection on publish failure
-#             connection = None
-#             publish_channel = None
-#             if attempt < max_retries - 1:
-#                 logging.warning(f"🔄 Retrying in 2 seconds... (attempt {attempt + 2}/{max_retries})")
-#                 time.sleep(2)
-#             continue
-    
-#     # Final failure logging
-#     logging.error(f"💥 FINAL FAILURE: Could not publish event {event_id} to {PUBLISH_QUEUE} after {max_retries} attempts")
-#     logging.error(f"   📋 Lost payload: OCR='{ocr_text}', VehicleType={payload.get('vehicleType')}")
-#     return False
-
 # -----------------------------
 # Helper Functions
 # -----------------------------
@@ -662,6 +529,7 @@ def process_video(video_path: str, event_id: str = None):
             entry = votes[unique_key]
             entry["count"] = 1  # Each detection is unique, no aggregation needed
             entry.update({
+                "actual_plate": plate,  # Store the clean plate text separately
                 "best_conf": score,
                 "best_frame": frame.copy(),
                 "best_box": plate_box,
@@ -676,16 +544,19 @@ def process_video(video_path: str, event_id: str = None):
 
     # Generate final results
     results = []
-    for plate, info in votes.items():
+    for unique_key, info in votes.items():
         if info["best_frame"] is None:
             continue
+
+        # Use the stored clean plate text
+        actual_plate = info["actual_plate"]
 
         frame = info["best_frame"]
         plate_crop = safe_crop(frame, info["best_box"])
         vehicle_crop = safe_crop(frame, info["vehicle_box"])
 
-        # Include event_id in filenames to ensure uniqueness
-        plate_file = os.path.join(CROP_PLATE_DIR, f"{event_id}_{plate}_frame{info['frame_id']}.jpg")
+        # Use actual plate text in filenames
+        plate_file = os.path.join(CROP_PLATE_DIR, f"{event_id}_{actual_plate}_frame{info['frame_id']}.jpg")
         vehicle_file = ""
         
         if plate_crop is not None:
@@ -693,20 +564,20 @@ def process_video(video_path: str, event_id: str = None):
             created_files.append(plate_file)
             
         if vehicle_crop is not None:
-            vehicle_file = os.path.join(CROP_VEHICLE_DIR, f"{event_id}_{plate}_frame{info['frame_id']}_vehicle.jpg")
+            vehicle_file = os.path.join(CROP_VEHICLE_DIR, f"{event_id}_{actual_plate}_frame{info['frame_id']}_vehicle.jpg")
             cv2.imwrite(vehicle_file, vehicle_crop)
             created_files.append(vehicle_file)
 
         results.append({
             "timestamp": timestamp,
             "frame_id": info["frame_id"],
-            "plate": plate,
+            "plate": actual_plate,  # Use the clean plate text without any underscores
             "votes": info["count"],
             "confidence": info["best_conf"],
             "vehicle_type": info.get("vehicle_type", "unknown"),
             "plate_crop": plate_file,
             "vehicle_crop": vehicle_file,
-            "event_id": event_id  # Include in results for traceability
+            "event_id": event_id
         })
 
     logging.info(f"✅ Done. Processed {len(results)} unique plates")
