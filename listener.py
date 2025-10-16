@@ -164,24 +164,48 @@ def publish_lpr_result(payload, headers=None, max_retries=3):
 
             msg_headers = headers or {}
             
+            # # Log the publishing attempt with detailed information
+            # logging.info(f"📤 Publishing to {PUBLISH_QUEUE} (attempt {attempt + 1}) - Event: {event_id}")
+            # logging.info(f"   📋 OCR: '{ocr_text}', Vehicle: {payload.get('vehicleType', 'unknown')}")
+            # logging.info(f"   📸 Plate image: {plate_image_size} bytes, Vehicle image: {vehicle_image_size} bytes")
+            # logging.info(f"   🏷️ Headers: {msg_headers}")
+            
+            # # Publish the message
+            # publish_start_time = time.time()
+            # channel.basic_publish(
+            #     exchange='',
+            #     routing_key=PUBLISH_QUEUE,
+            #     body=json.dumps(serializable_payload),
+            #     properties=pika.BasicProperties(
+            #         delivery_mode=2,
+            #         headers=msg_headers
+            #     )
+            # )
+            # publish_duration = time.time() - publish_start_time
+
+
             # Log the publishing attempt with detailed information
             logging.info(f"📤 Publishing to {PUBLISH_QUEUE} (attempt {attempt + 1}) - Event: {event_id}")
             logging.info(f"   📋 OCR: '{ocr_text}', Vehicle: {payload.get('vehicleType', 'unknown')}")
             logging.info(f"   📸 Plate image: {plate_image_size} bytes, Vehicle image: {vehicle_image_size} bytes")
             logging.info(f"   🏷️ Headers: {msg_headers}")
-            
+
+            # Prepare payload as bytes
+            body_bytes = json.dumps(serializable_payload).encode("utf-8")
+
             # Publish the message
             publish_start_time = time.time()
             channel.basic_publish(
                 exchange='',
                 routing_key=PUBLISH_QUEUE,
-                body=json.dumps(serializable_payload),
+                body=body_bytes,
                 properties=pika.BasicProperties(
-                    delivery_mode=2,
+                    delivery_mode=2,  # persistent message
                     headers=msg_headers
                 )
             )
             publish_duration = time.time() - publish_start_time
+
             
             # Success logging with detailed metrics
             logging.info(f"✅ Successfully published to {PUBLISH_QUEUE}")
