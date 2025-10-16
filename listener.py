@@ -163,26 +163,27 @@ def publish_lpr_result(payload, headers=None, max_retries=3):
                 serializable_payload["vehicleImage"]["buffer"] = encoded_vehicle
 
             msg_headers = headers or {}
-            
-            # # Log the publishing attempt with detailed information
-            # logging.info(f"📤 Publishing to {PUBLISH_QUEUE} (attempt {attempt + 1}) - Event: {event_id}")
-            # logging.info(f"   📋 OCR: '{ocr_text}', Vehicle: {payload.get('vehicleType', 'unknown')}")
-            # logging.info(f"   📸 Plate image: {plate_image_size} bytes, Vehicle image: {vehicle_image_size} bytes")
-            # logging.info(f"   🏷️ Headers: {msg_headers}")
-            
-            # # Publish the message
-            # publish_start_time = time.time()
-            # channel.basic_publish(
-            #     exchange='',
-            #     routing_key=PUBLISH_QUEUE,
-            #     body=json.dumps(serializable_payload),
-            #     properties=pika.BasicProperties(
-            #         delivery_mode=2,
-            #         headers=msg_headers
-            #     )
-            # )
-            # publish_duration = time.time() - publish_start_time
 
+            # Create sanitized payload for logging (without base64 image data)
+            log_payload = {k: v for k, v in serializable_payload.items() 
+                          if k not in ['numberPlateImage', 'vehicleImage']}
+            
+            # Add image metadata for logging
+            if serializable_payload.get('numberPlateImage'):
+                log_payload['numberPlateImage'] = {
+                    'originalname': serializable_payload['numberPlateImage'].get('originalname'),
+                    'mimetype': serializable_payload['numberPlateImage'].get('mimetype'),
+                    'size': serializable_payload['numberPlateImage'].get('size'),
+                    'buffer_length': len(serializable_payload['numberPlateImage'].get('buffer', ''))
+                }
+            
+            if serializable_payload.get('vehicleImage'):
+                log_payload['vehicleImage'] = {
+                    'originalname': serializable_payload['vehicleImage'].get('originalname'),
+                    'mimetype': serializable_payload['vehicleImage'].get('mimetype'), 
+                    'size': serializable_payload['vehicleImage'].get('size'),
+                    'buffer_length': len(serializable_payload['vehicleImage'].get('buffer', ''))
+                }
 
             # Log the publishing attempt with detailed information
             logging.info(f"📤 Publishing to {PUBLISH_QUEUE} (attempt {attempt + 1}) - Event: {event_id}")
@@ -190,8 +191,36 @@ def publish_lpr_result(payload, headers=None, max_retries=3):
             logging.info(f"   📸 Plate image: {plate_image_size} bytes, Vehicle image: {vehicle_image_size} bytes")
             logging.info(f"   🏷️ Headers: {msg_headers}")
 
+            # Log the complete payload structure (without binary data)
+            logging.info(f"📦 Complete payload structure being published:")
+            logging.info(f"   {json.dumps(log_payload, indent=2, default=str)}")
+
             # Prepare payload as bytes
-            body_bytes = json.dumps(serializable_payload).encode("utf-8")
+            body_json = json.dumps(serializable_payload)
+            body_bytes = body_json.encode("utf-8")
+            
+            # SIMPLE BODY LOG - what you requested
+            logging.info(f"📄 BODY CONTENT: {body_json}")
+            
+            # Log message size details
+            logging.info(f"📏 Message size details:")
+            logging.info(f"   📊 JSON payload size: {len(body_json)} characters")
+            logging.info(f"   📊 UTF-8 encoded size: {len(body_bytes)} bytes")
+            logging.info(f"   📊 Headers size: {len(str(msg_headers))} bytes")
+
+            # Log routing details
+            logging.info(f"🎯 Publishing details:")
+            logging.info(f"   📮 Exchange: '' (default)")
+            logging.info(f"   🔑 Routing key: {PUBLISH_QUEUE}")
+            logging.info(f"   💾 Delivery mode: 2 (persistent)")
+            logging.info(f"   🏷️ Headers count: {len(msg_headers)} items")
+
+            # Log first and last few characters of the actual body for verification
+            if len(body_json) > 200:
+                logging.info(f"📄 Body preview (first 100 chars): {body_json[:100]}...")
+                logging.info(f"📄 Body preview (last 100 chars): ...{body_json[-100:]}")
+            else:
+                logging.info(f"📄 Complete body: {body_json}")
 
             # Publish the message
             publish_start_time = time.time()
@@ -206,13 +235,12 @@ def publish_lpr_result(payload, headers=None, max_retries=3):
             )
             publish_duration = time.time() - publish_start_time
 
-            
             # Success logging with detailed metrics
             logging.info(f"✅ Successfully published to {PUBLISH_QUEUE}")
             logging.info(f"   ⏱️ Publish duration: {publish_duration:.3f}s")
-            logging.info(f"   📊 Message size: {len(json.dumps(serializable_payload))} bytes")
+            logging.info(f"   📊 Total message size: {len(body_bytes)} bytes")
             logging.info(f"   🎯 Event {event_id} → Queue: {PUBLISH_QUEUE}")
-            logging.info(f"   📋 Payload summary: OCR='{ocr_text}', VehicleType={payload.get('vehicleType')}")
+            logging.info(f"   📋 Final payload summary: OCR='{ocr_text}', VehicleType={payload.get('vehicleType')}")
             
             return True
             
