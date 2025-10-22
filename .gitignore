@@ -12,3 +12,6 @@ listener_old.py
 listener_c.py
 listener_g.py
 lpr_base.py
+lpr_debug_headless.py
+tasks.py
+backup.py

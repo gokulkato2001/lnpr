@@ -12,6 +12,9 @@ from datetime import datetime
 from collections import defaultdict
 from itertools import combinations
 from ultralytics import YOLO
+from graypy import GELFUDPHandler
+
+cv2.setNumThreads(1)
 
 # -----------------------------
 # Logging setup
@@ -20,6 +23,40 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
+# Graylog configuration
+GRAYLOG_ENVIRONMENT = os.getenv('GRAYLOG_ENVIRONMENT', 'stage')
+GRAYLOG_HOST_NAME = os.getenv('GRAYLOG_HOST_NAME', 'lpr-listener')
+GRAYLOG_HOST = os.getenv('GRAYLOG_HOST', '46.202.167.7')
+GRAYLOG_PORT = int(os.getenv('GRAYLOG_PORT', 12201))
+
+# Setup Graylog logger
+graylog_logger = logging.getLogger('graylog')
+graylog_logger.setLevel(logging.INFO)
+
+# Console handler for graylog_logger
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+graylog_logger.addHandler(console_handler)
+
+# Environment filter
+class EnvironmentFilter(logging.Filter):
+    def filter(self, record):
+        record._environment = GRAYLOG_ENVIRONMENT
+        return True
+
+# Graylog GELF handler
+gelf_handler = GELFUDPHandler(
+    host=GRAYLOG_HOST,
+    port=GRAYLOG_PORT,
+    facility=GRAYLOG_HOST_NAME,
+    extra_fields=True,
+    localname=GRAYLOG_HOST_NAME
+)
+gelf_handler.addFilter(EnvironmentFilter())
+gelf_handler.setLevel(logging.INFO)
+graylog_logger.addHandler(gelf_handler)
 
 # -----------------------------
 # Configuration
@@ -379,7 +416,7 @@ def process_frame(frame):
     fg_mask = motion_detector.apply(frame)
     
     # Vehicle detection
-    v_results = vehicle_model.predict(frame, verbose=False, conf=0.4)
+    v_results = vehicle_model.predict(frame, verbose=False, conf=0.55)
 
     for box in v_results[0].boxes:
         cls = int(box.cls[0])
@@ -389,19 +426,7 @@ def process_frame(frame):
             continue
 
         x1, y1, x2, y2 = map(int, box.xyxy[0])
-        
-        # Per-vehicle motion detection
-        # vehicle_motion_mask = fg_mask[y1:y2, x1:x2]
-        # if vehicle_motion_mask.size == 0:
-        #     continue
-            
-        # vehicle_motion_level = (cv2.countNonZero(vehicle_motion_mask) / 
-        #                        float(vehicle_motion_mask.shape[0] * vehicle_motion_mask.shape[1]))
-        
-        # # Skip stationary vehicles
-        # if vehicle_motion_level < MOTION_THRESHOLD:
-        #     logging.debug(f"[VEHICLE] Stationary vehicle skipped - motion: {vehicle_motion_level:.4f}")
-        #     continue
+
 
         # Extract motion mask region for this vehicle
         vehicle_motion_mask = fg_mask[y1:y2, x1:x2]
@@ -642,6 +667,9 @@ def callback(ch, method, properties, body):
         application_type = message.get("app_type") or message.get("applicationType") or "lnpr"
         colors = message.get("colors") or message.get("colour")
 
+        # Concise Graylog logging for event start
+        graylog_logger.info(f"LPR processing started: event_id={event_id}, device={device_id}, site={site_id}, app={application_type}")
+
         logging.info(f"📋 Processing event {event_id} - Message keys: {list(message.keys())}")
 
         # Extract event clip bytes
@@ -655,6 +683,10 @@ def callback(ch, method, properties, body):
 
         if not clip_data:
             logging.warning(f"⚠️ No valid clip data found for event {event_id}")
+            
+            # Concise Graylog logging for no clip data
+            graylog_logger.warning(f"No clip data: event_id={event_id}")
+            
             ch.basic_ack(delivery_tag=method.delivery_tag)
             acked = True
             return
@@ -667,8 +699,11 @@ def callback(ch, method, properties, body):
 
         # Run license plate recognition
         created_files, detection_results = process_video(video_path, event_id)
-
+        
         logging.info(f"🖼️ Saved crops in {CROP_PLATE_DIR} and {CROP_VEHICLE_DIR} for event {event_id}")
+
+        # Concise Graylog logging for video processing results
+        graylog_logger.info(f"Video processed: event_id={event_id}, detections={len(detection_results)}, files={len(created_files)}")
 
         # Publish results
         all_published_successfully = True
@@ -695,6 +730,7 @@ def callback(ch, method, properties, body):
                     with open(vehicle_crop_path, "rb") as f:
                         vehicle_buffer = f.read()
 
+                # Prepare payload and publish
                 result_payload = {
                     "eventId": event_id,
                     "ocrText": plate_text,
@@ -710,6 +746,9 @@ def callback(ch, method, properties, body):
                     "vehicleImage": make_image_payload(vehicle_buffer, vehicle_crop_path)
                 }
 
+                # Concise Graylog logging for detection publishing
+                graylog_logger.info(f"Publishing detection: event_id={event_id}, index={idx}, plate={plate_text}, vehicle={result.get('vehicle_type')}")
+
                 # Publish with enhanced logging
                 logging.info(f"📤 Publishing detection {idx}/{len(detection_results)} for event {event_id}")
                 logging.info(f"   🔍 OCR: '{plate_text}', Vehicle: {result.get('vehicle_type')}")
@@ -721,12 +760,20 @@ def callback(ch, method, properties, body):
                 if not success:
                     logging.error(f"❌ Failed to publish detection {idx}/{len(detection_results)} for event {event_id}")
                     logging.error(f"   📋 Failed OCR: '{plate_text}', Duration: {publish_duration:.3f}s")
+                    
+                    # Concise Graylog logging for publish failure
+                    graylog_logger.error(f"Detection publish failed: event_id={event_id}, index={idx}, plate={plate_text}")
+                    
                     all_published_successfully = False
                 else:
                     logging.info(f"✅ Successfully published detection {idx}/{len(detection_results)}")
                     logging.info(f"   📊 Published OCR: '{plate_text}', Duration: {publish_duration:.3f}s")
+
         else:
             logging.warning(f"⚠️ No valid plates detected in event {event_id} - nothing to publish")
+            
+            # Concise Graylog logging for no detections
+            graylog_logger.warning(f"No plates detected: event_id={event_id}")
 
         # Final publication summary
         if len(detection_results) > 0:
@@ -734,6 +781,10 @@ def callback(ch, method, properties, body):
             logging.info(f"📊 Publication Summary for event {event_id}:")
             logging.info(f"   📈 Success Rate: {len(detection_results)}/{len(detection_results)} ({success_rate:.1f}%)")
             logging.info(f"   🎯 Target Queue: {PUBLISH_QUEUE}")
+            
+            # Concise Graylog logging for final event summary
+            graylog_logger.info(f"Event processing summary: event_id={event_id}, detections={len(detection_results)}, success={all_published_successfully}")
+
             if all_published_successfully:
                 logging.info(f"   ✅ All detections published successfully!")
             else:
@@ -759,6 +810,10 @@ def callback(ch, method, properties, body):
 
     except Exception as e:
         logging.error(f"❌ Error handling message: {e}", exc_info=True)
+        
+        # Concise Graylog logging for exception
+        graylog_logger.error(f"Message processing error: event_id={event_id}, error={type(e).__name__}, message={str(e)}")
+        
         try:
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             acked = True
